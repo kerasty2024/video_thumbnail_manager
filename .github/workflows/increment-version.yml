@@ -1,0 +1,24 @@
+name: Increment Version
+on:
+  push:
+    branches:
+      - main
+jobs:
+  increment-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: pip install toml
+      - name: Increment version
+        run: python scripts/increment_version.py
+      - name: Commit version update
+        run: |
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git commit -am "Increment version [ci skip]"
+          git push

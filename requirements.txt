@@ -1,0 +1,4 @@
+loguru==0.7.3
+numpy==2.2.5
+Pillow==11.2.1
+toml==0.10.2
