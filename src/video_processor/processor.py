@@ -1,33 +1,17 @@
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed # as_completed をインポート
 from threading import Lock
 
 from loguru import logger
 
-from src.video_processor.cache import get_cache_path, is_cache_valid, clear_cache
-from src.video_processor.scanner import scan_videos, is_video_file
-from src.video_processor.thumbnail import generate_thumbnails, generate_placeholder_thumbnail, get_video_duration
+# cache と scanner のインポートは __init__.py 経由ではなく直接指定も可能
+from .cache import get_cache_path, is_cache_valid, clear_cache
+from .scanner import scan_videos # is_video_file は scanner 内で使用
+from .thumbnail import generate_thumbnails # generate_placeholder_thumbnail, get_video_duration は thumbnail 内で使用
 from src.distribution_enum import Distribution
 
 class VideoProcessor:
-    """Handles video processing, including thumbnail generation and caching."""
-
     def __init__(self, cache_dir, thumbnails_per_video, thumbnail_width, thumbnail_quality, concurrent_videos, min_size_mb, min_duration_seconds, update_callback=None, peak_pos=0.5, concentration=0.2, distribution='normal'):
-        """Initialize the VideoProcessor with configuration settings.
-
-        Args:
-            cache_dir (str): Directory for caching thumbnails.
-            thumbnails_per_video (int): Number of thumbnails to generate per video.
-            thumbnail_width (int): Width of generated thumbnails in pixels.
-            thumbnail_quality (int): Quality setting for thumbnails (1-31).
-            concurrent_videos (int): Number of videos to process concurrently.
-            min_size_mb (float): Minimum video size in MB to process.
-            min_duration_seconds (float): Minimum video duration in seconds to process.
-            update_callback (callable, optional): Callback for updating the UI with new thumbnails.
-            peak_pos (float): Position of peak concentration (0 to 1).
-            concentration (float): Spread of concentration (e.g., standard deviation for normal).
-            distribution (str): Distribution model ('normal', 'uniform', 'triangular').
-        """
         self.cache_dir = Path(cache_dir) if cache_dir else Path.cwd() / "cache"
         self.thumbnails_per_video = thumbnails_per_video
         self.thumbnail_width = thumbnail_width
@@ -35,7 +19,7 @@ class VideoProcessor:
         self.concurrent_videos = concurrent_videos
         self.min_size_mb = min_size_mb
         self.min_duration_seconds = min_duration_seconds
-        self.lock = Lock()
+        # self.lock = Lock() # ThreadPoolExecutorが内部でロックを管理するため、通常は不要
         self.update_callback = update_callback
         self.peak_pos = peak_pos
         self.concentration = concentration
@@ -45,11 +29,19 @@ class VideoProcessor:
             logger.warning(f"Invalid distribution '{distribution}', defaulting to 'normal'")
             self.distribution = Distribution.NORMAL
 
+        self._stop_requested = False # 停止フラグを追加
+
+    def request_stop(self):
+        """Requests the processing to stop."""
+        logger.info("VideoProcessor: Stop requested.")
+        self._stop_requested = True
+
     def scan_videos(self, folder):
-        """Scan a directory for video files, excluding 'cache' directories."""
+        # スキャン開始時に停止フラグをリセット（スキャン自体は止められないが、後続処理のため）
+        # self._stop_requested = False # スキャンは別操作なので、ここではリセットしない方が良いかも
         return scan_videos(folder, self.min_size_mb, self.min_duration_seconds)
 
-    def process_videos(self, videos, progress_callback=None, error_callback=None, command_callback=None, completion_callback=None):
+    def process_videos(self, videos, progress_callback=None, error_callback=None, command_callback=None, completion_callback=None, stop_flag_check=None):
         """Process a list of videos concurrently.
 
         Args:
@@ -58,28 +50,55 @@ class VideoProcessor:
             error_callback (callable, optional): Callback to report errors.
             command_callback (callable, optional): Callback to report FFmpeg commands.
             completion_callback (callable, optional): Callback to notify when processing is complete.
+            stop_flag_check (callable, optional): Callback to check if processing should stop.
+                                                  Returns True if stop is requested.
         """
-        logger.info(f"Starting processing for {len(videos)} videos")
+        logger.info(f"VideoProcessor: Starting processing for {len(videos)} videos")
+        self._stop_requested = False # 新しい処理バッチの開始時にリセット
+
+        processed_count = 0
+        total_videos = len(videos)
+
         with ThreadPoolExecutor(max_workers=self.concurrent_videos) as executor:
-            future_to_video = {
+            futures = {
                 executor.submit(
-                    generate_thumbnails,
-                    self,
+                    generate_thumbnails, # この関数も stop_flag_check を受け取る必要がある
+                    self, # VideoProcessorインスタンス (self) を渡す
                     video,
-                    progress_callback,
-                    command_callback
+                    progress_callback, # 個々のビデオのサムネイル生成進捗
+                    command_callback,
+                    lambda: self._stop_requested or (stop_flag_check and stop_flag_check()) # generate_thumbnails に渡す停止チェック
                 ): video
                 for video in videos
             }
-            for future in future_to_video:
-                video = future_to_video[future]
+
+            for future in as_completed(futures): # 完了順に処理
+                if self._stop_requested or (stop_flag_check and stop_flag_check()):
+                    logger.info("VideoProcessor: Stop flag triggered, cancelling remaining tasks.")
+                    # 残りのfutureをキャンセル (ただし実行中のものは止まらない場合がある)
+                    for f_cancel in futures:
+                        if not f_cancel.done():
+                            f_cancel.cancel()
+                    break # ループを抜ける
+
+                video = futures[future]
                 try:
-                    future.result()
+                    # result = future.result() # generate_thumbnails の戻り値 (thumbnails, timestamps, duration)
+                    # result は update_callback で処理されるので、ここでは例外チェックが主
+                    future.result() # 例外が発生していればここで re-raise される
+                    logger.debug(f"VideoProcessor: Successfully processed {video}")
                 except Exception as e:
-                    logger.error(f"Error processing {video}: {e}")
-                    if error_callback:
-                        error_callback(video, str(e))
-            if completion_callback:
-                logger.debug("Calling completion_callback")
-                completion_callback()
-        logger.info("Finished processing all videos")
+                    # future.cancel() でキャンセルされた場合、CancelledError が発生するかもしれない
+                    if not isinstance(e,futures.CancelledError): # type: ignore
+                        logger.error(f"VideoProcessor: Error processing {video}: {e}", exc_info=True)
+                        if error_callback:
+                            error_callback(video, str(e))
+                finally:
+                    processed_count +=1
+                    # logger.debug(f"Video {processed_count}/{total_videos} future completed or cancelled.")
+
+
+        logger.info(f"VideoProcessor: Finished processing batch. Processed {processed_count} futures.")
+        if completion_callback:
+            logger.debug("VideoProcessor: Calling completion_callback.")
+            completion_callback()

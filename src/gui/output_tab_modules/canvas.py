@@ -1,19 +1,60 @@
-import tkinter as tk
-from tkinter import ttk
+from PyQt6.QtWidgets import QScrollArea, QWidget, QVBoxLayout
+from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtGui import QKeyEvent
 
-def setup_output_canvas(gui):
-    """Setup the canvas and scrollbars for the Output tab."""
-    gui.output_canvas = tk.Canvas(gui.output_frame)
-    gui.output_scrollbar = ttk.Scrollbar(gui.output_frame, orient='vertical', command=gui.output_canvas.yview)
-    gui.output_scrollbar_x = ttk.Scrollbar(gui.output_frame, orient='horizontal', command=gui.output_canvas.xview)
-    gui.output_scrollable_frame = tk.Frame(gui.output_canvas)
+class CustomScrollArea(QScrollArea):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.scroll_speed_multiplier = 3 # スクロール速度の倍率
 
-    gui.output_scrollable_frame.bind("<Configure>", lambda e: gui.output_canvas.configure(scrollregion=gui.output_canvas.bbox("all")))
-    gui.output_canvas.create_window((0, 0), window=gui.output_scrollable_frame, anchor="nw")
-    gui.output_canvas.configure(yscrollcommand=gui.output_scrollbar.set, xscrollcommand=gui.output_scrollbar_x.set)
+    def keyPressEvent(self, event: QKeyEvent):
+        scroll_bar = self.verticalScrollBar()
+        if not scroll_bar:
+            super().keyPressEvent(event)
+            return
 
-    gui.output_canvas.pack(side="top", fill="both", expand=True)
-    gui.output_scrollbar.pack(side="right", fill="y")
-    gui.output_scrollbar_x.pack(side="bottom", fill="x")
+        current_value = scroll_bar.value()
+        step = scroll_bar.singleStep() * self.scroll_speed_multiplier # 通常のステップに倍率をかける
 
-    gui.output_canvas.bind_all("<MouseWheel>", gui.on_mouse_wheel)
+        if event.key() == Qt.Key.Key_Down:
+            scroll_bar.setValue(current_value + step)
+            event.accept()
+        elif event.key() == Qt.Key.Key_Up:
+            scroll_bar.setValue(current_value - step)
+            event.accept()
+        elif event.key() == Qt.Key.Key_PageDown:
+            scroll_bar.setValue(current_value + scroll_bar.pageStep())
+            event.accept()
+        elif event.key() == Qt.Key.Key_PageUp:
+            scroll_bar.setValue(current_value - scroll_bar.pageStep())
+            event.accept()
+        elif event.key() == Qt.Key.Key_Home:
+            scroll_bar.setValue(scroll_bar.minimum())
+            event.accept()
+        elif event.key() == Qt.Key.Key_End:
+            scroll_bar.setValue(scroll_bar.maximum())
+            event.accept()
+        else:
+            super().keyPressEvent(event) # 他のキーはデフォルト処理
+
+
+def setup_output_canvas_pyqt(gui):
+    """Setup the QScrollArea for the Output tab in PyQt6."""
+    gui.output_scroll_area = CustomScrollArea() # カスタムスクロールエリアを使用
+    gui.output_scroll_area.setWidgetResizable(True)
+    gui.output_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    gui.output_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    # スクロールエリアがキーイベントを受け取れるようにフォーカスを設定
+    gui.output_scroll_area.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+    gui.output_scrollable_widget = QWidget()
+    gui.output_scrollable_layout = QVBoxLayout(gui.output_scrollable_widget)
+    gui.output_scrollable_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+    gui.output_scroll_area.setWidget(gui.output_scrollable_widget)
+    gui.output_frame_layout.addWidget(gui.output_scroll_area) # QVBoxLayoutに追加
+
+    # Ctrl+Wheelでの横スクロールが必要な場合は、CustomScrollAreaのwheelEventをオーバーライド
+    # gui.output_scroll_area.wheelEvent = lambda event: on_mouse_wheel_pyqt(gui, event) # on_mouse_wheel_pyqtは別途定義が必要

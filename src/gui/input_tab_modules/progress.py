@@ -1,66 +1,75 @@
-import tkinter as tk
-from tkinter import ttk
-import time
-import threading
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QProgressBar, QLabel, QPushButton
+from PyQt6.QtCore import Qt, QThread
 from loguru import logger
-from src.distribution_enum import Distribution
-from .tooltip import Tooltip
 import json
 from pathlib import Path
+from src.distribution_enum import Distribution
+import time
+from src.gui.worker import VideoProcessingWorker # <--- 正しい場所からインポート
 
-def setup_progress_controls(gui, input_frame):
-    """Setup progress bar, ETA, completion label, and start button."""
-    bottom_frame = ttk.Frame(input_frame)
-    bottom_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky='ew')
+def setup_progress_controls_pyqt(gui, parent_layout):
+    # ... (この関数は変更なし) ...
+    bottom_frame_widget = QWidget()
+    bottom_layout = QVBoxLayout(bottom_frame_widget)
 
-    gui.progress_var = tk.DoubleVar()
-    gui.progress_bar = ttk.Progressbar(bottom_frame, variable=gui.progress_var, maximum=100)
-    gui.progress_bar.grid(row=0, column=0, padx=5, pady=5, sticky='ew')
-    Tooltip(gui.progress_bar, "Progress bar showing the thumbnail generation status.")
+    gui.progress_bar = QProgressBar()
+    gui.progress_bar.setRange(0, 100)
+    gui.progress_bar.setValue(0)
+    gui.progress_bar.setToolTip("Progress bar showing the thumbnail generation status.")
+    bottom_layout.addWidget(gui.progress_bar)
 
-    gui.eta_label = ttk.Label(bottom_frame, text="ETA: --:--")
-    gui.eta_label.grid(row=1, column=0, padx=5, pady=5)
-    Tooltip(gui.eta_label, "Estimated time remaining for processing.")
+    gui.eta_label = QLabel("ETA: --:--")
+    gui.eta_label.setToolTip("Estimated time remaining for processing.")
+    bottom_layout.addWidget(gui.eta_label)
 
-    gui.completion_label = ttk.Label(bottom_frame, text="")
-    gui.completion_label.grid(row=2, column=0, padx=5, pady=5)
-    Tooltip(gui.completion_label, "Message displayed when processing is complete.")
+    gui.completion_label = QLabel("")
+    gui.completion_label.setToolTip("Message display area.")
+    bottom_layout.addWidget(gui.completion_label)
 
-    start_button = ttk.Button(bottom_frame, text="Start", command=lambda: start_processing(gui))
-    start_button.grid(row=3, column=0, pady=10)
-    Tooltip(start_button, "Begin processing videos with the current settings.")
+    start_button = QPushButton("Start")
+    start_button.setToolTip("Begin processing videos with the current settings.")
+    start_button.clicked.connect(gui.start_processing_wrapper)
+    bottom_layout.addWidget(start_button, 0, Qt.AlignmentFlag.AlignCenter)
 
-    bottom_frame.columnconfigure(0, weight=1)
+    parent_layout.addWidget(bottom_frame_widget)
 
-def start_processing(gui):
-    """Start the video processing thread with current settings."""
-    from src.gui.thumbnail_gui import VideoThumbnailGUI
-    folder = gui.folder_var.get()
-    thumbs = gui.thumbs_var.get()
-    thumbs_per_column = gui.thumbs_per_column_var.get()
-    width = gui.width_var.get()
-    quality = gui.quality_var.get()
-    concurrent = gui.concurrent_var.get()
-    zoom = gui.zoom_var.get()
-    min_size = gui.min_size_var.get()
-    min_size_unit = gui.min_size_unit_var.get()
-    min_duration = gui.min_duration_var.get()
-    min_duration_unit = gui.min_duration_unit_var.get()
-    use_peak_concentration = gui.use_peak_concentration_var.get()
-    peak_pos = gui.peak_pos_var.get()
-    concentration = gui.concentration_var.get()
-    distribution = Distribution.UNIFORM if not use_peak_concentration else Distribution(gui.distribution_var.get())
 
-    if quality < 1:
-        quality = 1
-    elif quality > 31:
-        quality = 31
+def start_processing_pyqt(gui):
+    logger.info("start_processing_pyqt called.")
+    required_attrs = ['folder_var', 'thumbs_var', 'thumbs_per_column_var', 'width_var', 'quality_var',
+                      'concurrent_var', 'zoom_var', 'min_size_var', 'min_size_unit_var',
+                      'min_duration_var', 'min_duration_unit_var', 'use_peak_concentration_var',
+                      'peak_pos_var', 'concentration_var', 'distribution_var', 'completion_label',
+                      'output_scrollable_layout', 'progress_bar', 'eta_label']
+    for attr in required_attrs:
+        if not hasattr(gui, attr) or getattr(gui, attr) is None:
+            logger.error(f"GUI element '{attr}' for processing not initialized.")
+            if hasattr(gui, 'completion_label') and gui.completion_label:
+                gui.completion_label.setText(f"Error: GUI element '{attr}' not ready.")
+            return
 
-    size_conversion = {'KB': 1/1024, 'MB': 1, 'GB': 1024, 'TB': 1024*1024}
-    min_size_mb = min_size * size_conversion[min_size_unit]
+    folder = gui.folder_var.text()
+    thumbs = gui.thumbs_var.value()
+    thumbs_per_column = gui.thumbs_per_column_var.value()
+    width = gui.width_var.value()
+    quality = gui.quality_var.value()
+    concurrent = gui.concurrent_var.value()
+    zoom = gui.zoom_var.value()
+    min_size_mb = gui.get_min_size_mb()
+    min_duration_seconds = gui.get_min_duration_seconds()
+    use_peak_concentration = gui.use_peak_concentration_var.isChecked()
+    peak_pos = gui.peak_pos_var.value()
+    concentration = gui.concentration_var.value()
+    distribution_text = gui.distribution_var.currentText()
 
-    duration_conversion = {'seconds': 1, 'minutes': 60, 'hours': 3600}
-    min_duration_seconds = min_duration * duration_conversion[min_duration_unit]
+    try:
+        distribution = Distribution.UNIFORM if not use_peak_concentration else Distribution(distribution_text)
+    except ValueError:
+        logger.warning(f"Invalid distribution string '{distribution_text}', defaulting to UNIFORM.")
+        distribution = Distribution.UNIFORM
+
+    if quality < 1: quality = 1
+    elif quality > 31: quality = 31
 
     gui.config.set('default_folder', folder)
     gui.config.set('thumbnails_per_video', thumbs)
@@ -75,101 +84,95 @@ def start_processing(gui):
     gui.config.set('thumbnail_peak_pos', peak_pos)
     gui.config.set('thumbnail_concentration', concentration)
     gui.config.set('thumbnail_distribution', distribution)
-
-    # Save config and print to console
     gui.config.save()
+
     config_file = Path('config.json')
     if config_file.exists():
         with open(config_file, 'r') as f:
             config_content = json.load(f)
-        print("Configuration saved to config.json:")
-        print(json.dumps(config_content, indent=4))
+        logger.info(f"Configuration saved to config.json: {json.dumps(config_content, indent=4)}")
 
-    gui.processor = gui.processor.__class__(
-        gui.config.get('cache_dir'),
-        thumbs, width, quality, concurrent,
-        min_size_mb, min_duration_seconds,
-        gui.update_output_tab,
-        peak_pos=peak_pos,
-        concentration=concentration,
-        distribution=distribution
-    )
+    gui.reinit_processor()
 
-    for widget in gui.output_scrollable_frame.winfo_children():
-        widget.destroy()
+    if not gui.processor:
+        logger.error("Cannot start processing: VideoProcessor failed to initialize.")
+        gui.completion_label.setText("Error: VideoProcessor initialization failed.")
+        return
+
+    if gui.output_scrollable_layout:
+        while gui.output_scrollable_layout.count():
+            child = gui.output_scrollable_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
     gui.videos.clear()
-    gui.photo_references.clear()
+    gui.selected_videos.clear()
 
-    gui.total_videos = 0
-    gui.processed_thumbnails = 0
-    gui.total_thumbnails = 0
-    gui.progress_var.set(0)
-    gui.eta_label.config(text="ETA: --:--")
-    gui.completion_label.config(text="")
-    gui.start_time = None
+    if gui.worker_thread and gui.worker_thread.isRunning():
+        logger.warning("Processing is already in progress. Please wait.")
+        gui.completion_label.setText("Processing already in progress. Please wait.")
+        return
+
+    try:
+        logger.info(f"Scanning videos in folder: {gui.folder_var.text()}")
+        # スキャン処理をワーカースレッドに移動する準備として、ここではファイルリストだけ作成
+        # gui.scanned_videos_for_worker = gui.processor.scan_videos(gui.folder_var.text())
+        # スキャンはワーカースレッドで行うため、ここでは行わない
+        # 대신, worker 가 스캔할 폴더를 알 수 있도록 설정
+        gui.folder_to_scan_for_worker = gui.folder_var.text() # workerが参照するフォルダ
+
+        # total_videos と total_thumbnails はスキャン後にworkerが設定するか、
+        # またはスキャン自体をworkerで行い、その結果をGUIにシグナルで通知する。
+        # 今回は、スキャンもworkerで行うように変更した worker.py を前提とする。
+        # そのため、ここでの total_videos, total_thumbnails の設定は不要。
+        # GUIの表示は "Scanning..." のようにする。
+        gui.total_videos = 0 # スキャン前にリセット
+        gui.total_thumbnails = 0 # スキャン前にリセット
+        gui.completion_label.setText("Scanning videos...") # スキャン中であることを表示
+        logger.info("Video scan will be performed by the worker thread.")
+
+    except Exception as e: # ここでのエラーは主にフォルダパス取得など
+        logger.error(f"Error preparing for video scanning: {e}", exc_info=True)
+        gui.completion_label.setText(f"Error preparing scan: {e}")
+        gui.setWindowTitle(gui.base_window_title)
+        output_tab_idx = gui.get_tab_index_by_text("Output (Processing...)")
+        if output_tab_idx == -1: output_tab_idx = gui.get_tab_index_by_text("Output")
+        if output_tab_idx != -1 and hasattr(gui.notebook, 'setTabText'):
+            gui.notebook.setTabText(output_tab_idx, "Output")
+        return
+
+    gui.processed_thumbnails_count = 0
+    if gui.progress_bar: gui.progress_bar.setValue(0)
+    if gui.eta_label: gui.eta_label.setText("ETA: --:--")
+    # gui.completion_label.setText("Processing starting...") # スキャン後に変更
+    gui.start_time = time.time()
     gui.video_counter = 0
     gui.update_selection_count()
 
-    threading.Thread(target=lambda: process_videos(gui), daemon=True).start()
+    gui.worker_thread = QThread()
+    gui.processing_worker = VideoProcessingWorker(gui)
+    gui.processing_worker.moveToThread(gui.worker_thread)
 
-def process_videos(gui):
-    """Process all videos in the selected folder."""
-    videos = gui.processor.scan_videos(gui.folder_var.get())
-    gui.total_videos = len(videos)
-    gui.total_thumbnails = gui.total_videos * gui.processor.thumbnails_per_video
-    logger.debug(f"Total videos to process: {gui.total_videos}, Total thumbnails to generate: {gui.total_thumbnails}")
-    if gui.total_videos == 0:
-        logger.warning("No videos found to process")
-        on_processing_complete(gui)
-        return
-    gui.start_time = time.time()
+    if hasattr(gui, 'connect_worker_signals') and callable(gui.connect_worker_signals):
+        gui.connect_worker_signals(gui.processing_worker)
+    else:
+        logger.error("gui object does not have connect_worker_signals method!")
+        # フォールバックとして直接接続を試みる（ただし、これは理想的ではない）
+        try:
+            gui.processing_worker.signals.progress.connect(gui.update_progress_bar_slot)
+            gui.processing_worker.signals.thumbnail_progress.connect(gui.update_process_tab_thumbnail_progress_slot)
+            gui.processing_worker.signals.eta_update.connect(gui.update_eta_label_slot)
+            gui.processing_worker.signals.completion_message.connect(gui.update_completion_label_slot)
+            gui.processing_worker.signals.error.connect(gui.report_error_slot_detailed)
+            gui.processing_worker.signals.command.connect(gui.update_command_slot)
+            gui.processing_worker.signals.processing_complete.connect(gui.on_processing_complete_slot)
+            logger.info("Fallback: Connected worker signals directly in progress.py.")
+        except Exception as e_connect:
+            logger.error(f"Fallback connection failed: {e_connect}")
+            gui.completion_label.setText("Error: Failed to set up processing signals.")
+            return
 
-    gui.processor.process_videos(
-        videos,
-        progress_callback=lambda progress: update_progress(gui, progress),
-        error_callback=gui.report_error,
-        command_callback=lambda cmd, thumb, vid: update_command(gui, cmd, thumb, vid),
-        completion_callback=lambda: on_processing_complete(gui)
-    )
 
-def update_progress(gui, progress):
-    """Update the progress bar and ETA during thumbnail generation."""
-    thumbnails_for_video = gui.processor.thumbnails_per_video
-    thumbnails_processed_for_video = int((progress / 100) * thumbnails_for_video)
-    gui.processed_thumbnails += 1
-    logger.debug(f"Processed thumbnails: {gui.processed_thumbnails}/{gui.total_thumbnails}")
+    gui.worker_thread.started.connect(gui.processing_worker.process_videos_thread)
 
-    from src.gui.process_tab import update_process_text
-    update_process_text(gui, f"Thumbnail Progress: {progress:.2f}% (Thumbnail {thumbnails_processed_for_video}/{thumbnails_for_video})\n")
-
-    if gui.total_thumbnails > 0:
-        overall_progress = (gui.processed_thumbnails / gui.total_thumbnails) * 100
-        gui.progress_var.set(overall_progress)
-
-        elapsed_time = time.time() - gui.start_time
-        if gui.processed_thumbnails > 0:
-            thumbnails_per_second = gui.processed_thumbnails / elapsed_time
-            remaining_thumbnails = max(0, gui.total_thumbnails - gui.processed_thumbnails)
-            eta_seconds = remaining_thumbnails / thumbnails_per_second if thumbnails_per_second > 0 else 0
-            eta_minutes = int(eta_seconds // 60)
-            eta_secs = int(eta_seconds % 60)
-            gui.eta_label.config(text=f"ETA: {eta_minutes:02d}:{eta_secs:02d}")
-        else:
-            gui.eta_label.config(text="ETA: --:--")
-
-def update_command(gui, command, thumbnail_path, video_path):
-    """Update the process tab with FFmpeg commands and preview thumbnails."""
-    from src.gui.process_tab import update_process_text, update_thumbnail_preview
-    quoted_command = command.replace(str(video_path), f'"{video_path}"').replace(str(thumbnail_path), f'"{thumbnail_path}"')
-    update_process_text(gui, f"Executing: {quoted_command}\n")
-    update_thumbnail_preview(gui, thumbnail_path)
-
-def on_processing_complete(gui):
-    """Display completion message when all videos are processed."""
-    gui.completion_label.config(text="Processing Complete!")
-    gui.progress_var.set(100)
-    gui.eta_label.config(text="ETA: 00:00")
-    logger.debug("Processing complete, ensuring UI update")
-    gui.output_scrollable_frame.update_idletasks()
-    gui.output_canvas.configure(scrollregion=gui.output_canvas.bbox("all"))
-    gui.update_selection_count()
+    logger.info("Starting worker thread for video processing (including scan).")
+    gui.worker_thread.start()

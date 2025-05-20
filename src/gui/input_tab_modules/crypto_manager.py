@@ -1,14 +1,14 @@
-import tkinter as tk
-from tkinter import ttk
-import webbrowser
+# src/gui/input_tab_modules/crypto_manager.py
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication
+from PyQt6.QtGui import QPixmap, QCursor, QDesktopServices, QImage
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QTimer # QTimer をインポート
 from pathlib import Path
-from PIL import Image, ImageTk
+from PIL import Image, ImageQt
 from loguru import logger
-from ..utils import resize_image
-from .tooltip import Tooltip
+from ..utils import resize_image_pil
 
 class CryptoManager:
-    """Manages cryptocurrency addresses and their corresponding QR codes."""
+    # ... (変更なし) ...
     def __init__(self, contents_path):
         self.contents_path = Path(contents_path)
         self.crypto_data = {
@@ -27,69 +27,99 @@ class CryptoManager:
         }
 
     def get_address(self, crypto):
-        """Get the address for a cryptocurrency."""
         return self.crypto_data.get(crypto, {}).get("address", "")
 
     def get_qr_path(self, crypto):
-        """Get the path to the QR code image for a cryptocurrency."""
         qr_file = self.crypto_data.get(crypto, {}).get("qr_file", "")
         return self.contents_path / "crypto" / qr_file if qr_file else None
 
-def setup_crypto_links(gui, input_frame):
-    """Setup cryptocurrency links and QR code display."""
-    links_frame = ttk.Frame(input_frame)
-    links_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky='ew')
+class ClickableLabel(QLabel):
+    # ... (変更なし) ...
+    clicked = pyqtSignal()
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setStyleSheet("QLabel { color: blue; text-decoration: underline; }")
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
-    # GitHub and Buy Me a Coffee links
-    github_label = ttk.Label(links_frame, text="Github: kerasty2024", cursor="hand2", foreground="blue")
-    github_label.grid(row=0, column=0, padx=5, pady=5, sticky='w')
-    github_label.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/kerasty2024/"))
-    Tooltip(github_label, "Visit the author's GitHub profile.")
 
-    coffee_label = ttk.Label(links_frame, text="Buy Me a Coffee: kerasty", cursor="hand2", foreground="blue")
-    coffee_label.grid(row=1, column=0, padx=5, pady=5, sticky='w')
-    coffee_label.bind("<Button-1>", lambda e: webbrowser.open("https://www.buymeacoffee.com/kerasty"))
-    Tooltip(coffee_label, "Support the author with a coffee via Buy Me a Coffee.")
+def setup_crypto_links_pyqt(gui, parent_layout):
+    links_group_widget = QWidget()
+    links_frame_layout = QHBoxLayout(links_group_widget)
 
-    # Crypto address labels
-    row = 2
+    left_crypto_layout = QVBoxLayout()
+    left_crypto_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+    github_label = QLabel("<a href='https://github.com/kerasty2024/'>Github: kerasty2024</a>")
+    github_label.setOpenExternalLinks(True)
+    github_label.setToolTip("Visit the author's GitHub profile.")
+    left_crypto_layout.addWidget(github_label)
+
+    coffee_label = QLabel("<a href='https://www.buymeacoffee.com/kerasty'>Buy Me a Coffee: kerasty</a>")
+    coffee_label.setOpenExternalLinks(True)
+    coffee_label.setToolTip("Support the author with a coffee via Buy Me a Coffee.")
+    left_crypto_layout.addWidget(coffee_label)
+
     for crypto, data in gui.crypto_manager.crypto_data.items():
         address = data["address"]
-        label = ttk.Label(links_frame, text=f"{crypto} Address: {address}", cursor="hand2", foreground="blue")
-        label.grid(row=row, column=0, padx=5, pady=5, sticky='w')
-        label.bind("<Button-1>", lambda e, c=crypto, a=address: copy_crypto_address(gui, c, a))
-        Tooltip(label, f"Click to copy {crypto} address for donations.")
-        row += 1
+        label = ClickableLabel(f"{crypto} Address: {address}")
+        label.setToolTip(f"Click to copy {crypto} address for donations.")
+        label.clicked.connect(lambda c=crypto, a=address: copy_crypto_address_pyqt(gui, c, a))
+        left_crypto_layout.addWidget(label)
 
-    # Load and display initial QR code (BTC)
-    qr_path = gui.crypto_manager.get_qr_path("BTC")
-    qr_image = Image.open(qr_path)
-    qr_image = resize_image(qr_image, (100, 100))
-    gui.qr_photo = ImageTk.PhotoImage(qr_image)
-    gui.qr_label = tk.Label(links_frame, image=gui.qr_photo)
-    gui.qr_label.image = gui.qr_photo
-    gui.qr_label.grid(row=0, column=1, rowspan=row, padx=5, pady=5, sticky='e')
-    Tooltip(gui.qr_label, "QR code for the selected cryptocurrency address.")
+    left_crypto_layout.addStretch(1)
+    links_frame_layout.addLayout(left_crypto_layout, 1)
 
-    links_frame.columnconfigure(0, weight=1)
+    gui.qr_label = QLabel()
+    gui.qr_label.setFixedSize(100, 100)
+    gui.qr_label.setToolTip("QR code for the selected cryptocurrency address.")
+    gui.qr_label.setStyleSheet("QLabel { border: 1px solid lightgray; background-color: white; }") # 背景と境界線
+    links_frame_layout.addWidget(gui.qr_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
-def copy_crypto_address(gui, crypto, address):
-    """Copy the cryptocurrency address to the clipboard and update the QR code."""
-    gui.root.clipboard_clear()
-    gui.root.clipboard_append(address)
-    gui.root.update()
+    # QTimer.singleShotを使用して、イベントループが少し進んでからQRコードを更新
+    QTimer.singleShot(0, lambda: update_qr_code_display(gui, "BTC"))
+
+    parent_layout.addWidget(links_group_widget)
+
+
+def copy_crypto_address_pyqt(gui, crypto, address):
+    clipboard = QApplication.clipboard()
+    clipboard.setText(address)
     logger.debug(f"Copied {crypto} address to clipboard: {address}")
-    gui.completion_label.config(text=f"{crypto} address copied to clipboard!")
+    if hasattr(gui, 'update_completion_label_slot'):
+        gui.update_completion_label_slot(f"{crypto} address copied to clipboard!")
+    update_qr_code_display(gui, crypto)
 
-    # Update QR code
+def update_qr_code_display(gui, crypto):
     gui.current_crypto = crypto
     qr_path = gui.crypto_manager.get_qr_path(crypto)
-    try:
-        qr_image = Image.open(qr_path)
-        qr_image = resize_image(qr_image, (100, 100))
-        gui.qr_photo = ImageTk.PhotoImage(qr_image)
-        gui.qr_label.configure(image=gui.qr_photo)
-        gui.qr_label.image = gui.qr_photo
-    except Exception as e:
-        logger.error(f"Failed to load QR code for {crypto}: {e}")
-        gui.completion_label.config(text=f"Failed to load {crypto} QR code")
+
+    if not hasattr(gui, 'qr_label') or gui.qr_label is None:
+        logger.warning("gui.qr_label not initialized in update_qr_code_display")
+        return
+
+    if qr_path and qr_path.exists():
+        try:
+            pil_image = Image.open(qr_path)
+            # リサイズは固定サイズ(100x100)に合わせる
+            pil_image_resized = pil_image.resize((100, 100), Image.Resampling.LANCZOS)
+
+            qimage = ImageQt.ImageQt(pil_image_resized.convert("RGBA"))
+            gui.qr_pixmap = QPixmap.fromImage(qimage)
+            gui.qr_label.setPixmap(gui.qr_pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            gui.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter) # 中央揃え
+        except Exception as e:
+            logger.error(f"Failed to load or display QR code for {crypto}: {e}", exc_info=True)
+            gui.qr_label.setText("QR\nError")
+            gui.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if hasattr(gui, 'update_completion_label_slot'):
+                gui.update_completion_label_slot(f"Failed to load {crypto} QR code")
+    else:
+        logger.warning(f"QR code path not found for {crypto}: {qr_path}")
+        gui.qr_label.setText("QR\nN/A")
+        gui.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if hasattr(gui, 'update_completion_label_slot'):
+            gui.update_completion_label_slot(f"QR code for {crypto} not found")

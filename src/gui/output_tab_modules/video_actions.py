@@ -1,72 +1,102 @@
-import tkinter as tk
-import subprocess
+from PyQt6.QtCore import QUrl, Qt
+from PyQt6.QtGui import QDesktopServices, QCursor
+from PyQt6.QtWidgets import QApplication, QMenu
 from pathlib import Path
+import subprocess
 from loguru import logger
-from .selection import select_video, toggle_selection
 
-def on_mouse_wheel(gui, event):
-    """Handle mouse wheel scrolling for the output canvas."""
-    if not event.state & 0x0001:  # Check if Ctrl key is not pressed
-        gui.output_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+def on_mouse_wheel_pyqt(gui, event):
+    """Handle mouse wheel scrolling for the output QScrollArea (PyQt6)."""
+    # Standard QScrollArea handles vertical scroll.
+    # For Ctrl+Wheel for horizontal scroll:
+    scroll_area = gui.output_scroll_area
+    if not scroll_area:
+        return
+
+    if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+        delta = event.angleDelta().y()  # Typically y for wheel, but might be x for some mice
+        if delta == 0: delta = event.angleDelta().x() # If y is 0, try x (for horizontal scroll wheels)
+
+        current_val = scroll_area.horizontalScrollBar().value()
+        # Adjust sensitivity; angleDelta is usually +/- 120
+        scroll_amount = -delta // 15 # Negative to match typical scroll direction
+        scroll_area.horizontalScrollBar().setValue(current_val + scroll_amount)
+        event.accept()
     else:
-        gui.output_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        # Let QScrollArea handle vertical scroll by not accepting the event here
+        # or by explicitly calling its default handler if overridden.
+        # If this function is an event filter, then returning False passes it on.
+        # If it's a direct override of wheelEvent, call super().wheelEvent(event).
+        event.ignore() # Allow parent/default handling
 
-def play_video(gui, video):
-    """Play the selected video using the default system video player."""
+def play_video_pyqt(gui, video_path: Path):
+    """Play the selected video using the default system video player (PyQt6)."""
     try:
-        video_path = str(video)
-        logger.debug(f"Attempting to play video: {video_path}")
-        if Path(video_path).exists():
-            subprocess.run(['start', '', video_path], shell=True, check=True)
-        else:
-            logger.error(f"Video file does not exist: {video_path}")
-            gui.report_error(video, "Video file does not exist")
-    except Exception as e:
-        logger.error(f"Failed to play video {video}: {e}")
-        gui.report_error(video, str(e))
-
-def show_context_menu(gui, event, video):
-    """Show a context menu for the video with various actions."""
-    menu = tk.Menu(gui.root, tearoff=0)
-    var = tk.BooleanVar(value=video in gui.selected_videos)
-    menu.add_command(label="Play Video", command=lambda: play_video(gui, video))
-    menu.add_command(label="Select/Deselect", command=lambda: select_video(gui, video, var))
-    menu.add_command(label="Copy Filename", command=lambda: copy_filename(gui, video))
-    menu.add_command(label="Copy Filepath", command=lambda: copy_filepath(gui, video))
-    menu.add_command(label="Open in Explorer", command=lambda: open_in_explorer(video))
-    try:
-        menu.tk_popup(event.x_root, event.y_root)
-    finally:
-        menu.grab_release()
-
-def open_in_explorer(video):
-    """Open the video's parent directory in Windows Explorer."""
-    try:
-        video_path = Path(video)
+        video_url = QUrl.fromLocalFile(str(video_path.resolve()))
         if video_path.exists():
-            subprocess.run(['explorer', '/select,', str(video_path)], shell=True, check=True)
-            logger.debug(f"Opened Explorer for: {video_path}")
+            if not QDesktopServices.openUrl(video_url):
+                logger.error(f"QDesktopServices could not open video: {video_path}")
+                # Fallback to subprocess for platforms where QDesktopServices might fail for local files
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(str(video_path.resolve()))
+                    elif sys.platform == "darwin":
+                        subprocess.run(['open', str(video_path.resolve())], check=True)
+                    else: # linux variants
+                        subprocess.run(['xdg-open', str(video_path.resolve())], check=True)
+                except Exception as e_sub:
+                    logger.error(f"Fallback subprocess failed to play video {video_path}: {e_sub}")
+                    gui.report_error_slot(str(video_path), f"Could not play video (QDesktopServices and subprocess failed). Error: {e_sub}")
+
         else:
             logger.error(f"Video file does not exist: {video_path}")
-    except subprocess.CalledProcessError as e:
-        pass
+            gui.report_error_slot(str(video_path), "Video file does not exist")
     except Exception as e:
-        logger.error(f"Failed to open Explorer for {video}: {e}, {type(e)=}")
+        logger.error(f"Failed to play video {video_path}: {e}")
+        gui.report_error_slot(str(video_path), str(e))
 
-def copy_filename(gui, video):
-    """Copy the video filename to the clipboard."""
-    filename = Path(video).name
-    gui.root.clipboard_clear()
-    gui.root.clipboard_append(filename)
-    gui.root.update()
+
+# Context menu creation is now part of VideoEntryWidgetPyQt
+# These are helper functions for menu actions:
+
+def open_in_explorer_pyqt(video_path: Path):
+    """Open the video's parent directory in the system's file explorer."""
+    try:
+        if not video_path.exists():
+            logger.error(f"Cannot open in explorer, file does not exist: {video_path}")
+            # Optionally show a message to user via gui signal if gui ref was passed
+            return
+
+        # QDesktopServices.openUrl(QUrl.fromLocalFile(str(video_path.parent))) # Opens directory
+        # For selecting the file:
+        if sys.platform == "win32":
+            subprocess.run(['explorer', '/select,', str(video_path.resolve())], shell=False, check=True)
+        elif sys.platform == "darwin": # macOS
+            subprocess.run(['open', '-R', str(video_path.resolve())], check=True)
+        else: # Linux
+            # Fallback to just opening the directory as 'select' isn't standard for xdg-open
+            # Some file managers might support it with specific URIs (e.g. KIO for Dolphin)
+            # but QDesktopServices.openUrl is more general for just opening the dir.
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(video_path.parent)))
+            # Alternatively, try to use a common file manager if known
+            # subprocess.run(['xdg-open', str(video_path.parent)], check=True)
+
+        logger.debug(f"Opened/selected in Explorer: {video_path}")
+
+    except Exception as e:
+        logger.warning(f"Failed to open Explorer for {video_path}: {e}")
+        # Optionally show error to user
+
+import sys, os # for play_video_pyqt and open_in_explorer_pyqt platform checks
+
+def copy_filename_pyqt(gui, video_path: Path):
+    filename = video_path.name
+    QApplication.clipboard().setText(filename)
     logger.debug(f"Copied filename to clipboard: {filename}")
-    gui.completion_label.config(text="Filename copied to clipboard!")
+    gui.update_completion_label_slot("Filename copied to clipboard!")
 
-def copy_filepath(gui, video):
-    """Copy the full video filepath to the clipboard."""
-    filepath = str(video)
-    gui.root.clipboard_clear()
-    gui.root.clipboard_append(filepath)
-    gui.root.update()
+def copy_filepath_pyqt(gui, video_path: Path):
+    filepath = str(video_path.resolve())
+    QApplication.clipboard().setText(filepath)
     logger.debug(f"Copied filepath to clipboard: {filepath}")
-    gui.completion_label.config(text="Filepath copied to clipboard!")
+    gui.update_completion_label_slot("Filepath copied to clipboard!")

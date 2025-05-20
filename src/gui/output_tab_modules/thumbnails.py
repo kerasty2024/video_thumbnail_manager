@@ -1,179 +1,328 @@
-import tkinter as tk
-from pathlib import Path
-from PIL import Image, ImageTk, ImageDraw, ImageFont
-from loguru import logger
-from ..utils import resize_image
-from .video_actions import show_context_menu, play_video
-from .selection import select_video, toggle_selection
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox,
+                             QSizePolicy, QGridLayout, QFrame, QMenu, QApplication)
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QCursor, QDesktopServices, QFontMetrics
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QUrl, QPoint, QRectF # QRectF追加
 
-def update_output_tab(gui, video, thumbnails, timestamps, duration):
-    """Update the output tab with new thumbnails, timestamps, and video duration."""
-    logger.debug(f"Updating Output tab for {video} with {len(thumbnails)} thumbnails")
-    gui.videos[video] = thumbnails
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont as PILImageFont, ImageQt
+from loguru import logger
+import subprocess
+
+from ..utils import resize_image_pil
+from .video_actions import play_video_pyqt, copy_filename_pyqt, copy_filepath_pyqt, open_in_explorer_pyqt
+
+class ThumbnailLabel(QLabel):
+    doubleClicked = pyqtSignal()
+    rightClicked = pyqtSignal(QPoint)
+
+    TIMESTAMP_AREA_HEIGHT = 20
+
+    def __init__(self, gui, video_path, pil_image, timestamp_str, original_dims, parent=None):
+        super().__init__(parent)
+        self.gui = gui
+        self.video_path = video_path
+        self.pil_image_original = pil_image
+        self.timestamp_str = timestamp_str
+        self.original_image_width, self.original_image_height = original_dims
+        self.is_zoomed = False
+        self.current_pixmap = None # Stores the QPixmap of the (possibly zoomed) image part
+
+        self._pil_font = None
+        try:
+            self._pil_font = PILImageFont.truetype("arial.ttf", 10) # Timestamp font size
+        except IOError:
+            logger.warning("Arial font not found, using Pillow's default font for timestamps.")
+            self._pil_font = PILImageFont.load_default()
+
+        # Set initial image pixmap (without drawing timestamp yet)
+        self._update_image_pixmap(self.pil_image_original, self.original_image_width, self.original_image_height)
+
+        self.setScaledContents(False)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMouseTracking(True)
+
+        # Total size of the label widget
+        self.setFixedSize(self.original_image_width, self.original_image_height + self.TIMESTAMP_AREA_HEIGHT)
+
+    def _update_image_pixmap(self, pil_img_source, target_w, target_h_img):
+        """Updates self.current_pixmap with the (re)sized image."""
+        try:
+            pil_img_resized = pil_img_source.resize((target_w, target_h_img), Image.Resampling.LANCZOS)
+            qimage = ImageQt.ImageQt(pil_img_resized.convert("RGBA"))
+            self.current_pixmap = QPixmap.fromImage(qimage)
+        except Exception as e:
+            logger.error(f"Error in _update_image_pixmap for {self.video_path}: {e}", exc_info=True)
+            # Create a placeholder error pixmap
+            self.current_pixmap = QPixmap(target_w, target_h_img)
+            self.current_pixmap.fill(Qt.GlobalColor.lightGray)
+            p = QPainter(self.current_pixmap)
+            p.setPen(Qt.GlobalColor.red)
+            p.drawText(self.current_pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "Img Err")
+            p.end()
+        self.update() # Trigger a repaint to show the new/updated pixmap and timestamp
+
+    def paintEvent(self, event):
+        # super().paintEvent(event) # Not needed for custom QLabel drawing usually
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Image part dimensions
+        img_rect_w = self.width()
+        img_rect_h = self.height() - self.TIMESTAMP_AREA_HEIGHT
+
+        if self.current_pixmap:
+            # Draw the image pixmap, scaled to fit the image area
+            # self.current_pixmap is already sized for the image portion (target_w, target_h_img)
+            painter.drawPixmap(0, 0, self.current_pixmap)
+        else:
+            painter.fillRect(0, 0, img_rect_w, img_rect_h, Qt.GlobalColor.darkGray)
+            painter.setPen(Qt.GlobalColor.white)
+            painter.drawText(QRectF(0,0, img_rect_w, img_rect_h), Qt.AlignmentFlag.AlignCenter, "No Img")
+
+        # --- Draw Timestamp ---
+        timestamp_bg_rect = QRectF(0, img_rect_h, img_rect_w, self.TIMESTAMP_AREA_HEIGHT)
+        painter.fillRect(timestamp_bg_rect, QColor(0,0,0,180)) # Darker background for timestamp
+
+        painter.setPen(Qt.GlobalColor.white)
+        # Use QFont for better text rendering in Qt
+        qfont = QFont("Arial", 8) # Consistent font size
+        painter.setFont(qfont)
+
+        # Ensure timestamp text fits, or elide it
+        fm = QFontMetrics(qfont)
+        elided_timestamp = fm.elidedText(self.timestamp_str, Qt.TextElideMode.ElideRight, img_rect_w - 4) # 4px padding
+
+        text_rect = QRectF(2, img_rect_h, img_rect_w - 4, self.TIMESTAMP_AREA_HEIGHT) # Rect for text with padding
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, elided_timestamp)
+
+        # painter.end() # Not needed if QPainter is local to paintEvent
+
+    def enterEvent(self, event):
+        if QApplication.keyboardModifiers() == Qt.KeyboardModifier.ControlModifier and not self.is_zoomed:
+            if not hasattr(self.gui, 'zoom_var') or self.gui.zoom_var is None: return
+            zoom_factor = self.gui.zoom_var.value()
+
+            zoomed_image_w = int(self.original_image_width * zoom_factor)
+            zoomed_image_h = int(self.original_image_height * zoom_factor)
+
+            self._update_image_pixmap(self.pil_image_original, zoomed_image_w, zoomed_image_h)
+            self.setFixedSize(zoomed_image_w, zoomed_image_h + self.TIMESTAMP_AREA_HEIGHT)
+            self.is_zoomed = True
+            if self.parentWidget() and hasattr(self.parentWidget(), 'updateGeometry'):
+                self.parentWidget().updateGeometry()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if self.is_zoomed:
+            self._update_image_pixmap(self.pil_image_original, self.original_image_width, self.original_image_height)
+            self.setFixedSize(self.original_image_width, self.original_image_height + self.TIMESTAMP_AREA_HEIGHT)
+            self.is_zoomed = False
+            if self.parentWidget() and hasattr(self.parentWidget(), 'updateGeometry'):
+                self.parentWidget().updateGeometry()
+        super().leaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
+            play_video_pyqt(self.gui, self.video_path)
+        super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event):
+        # Propagate click to parent (VideoEntryWidgetPyQt) for selection toggle
+        if self.parentWidget() and hasattr(self.parentWidget(), 'toggle_entry_selection_from_child'):
+            self.parentWidget().toggle_entry_selection_from_child()
+
+        # Handle middle button click for playing video
+        if event.button() == Qt.MouseButton.MiddleButton:
+            play_video_pyqt(self.gui, self.video_path)
+
+        super().mousePressEvent(event) # Allow default processing too
+
+    def contextMenuEvent(self, event):
+        self.rightClicked.emit(event.globalPos())
+
+
+class VideoEntryWidgetPyQt(QFrame):
+    _pil_error_font = None
+
+    def __init__(self, gui, video_path: Path, thumbnails_data, timestamps, duration, parent=None):
+        super().__init__(parent)
+        self.gui = gui
+        self.video_path = video_path
+        self.thumbnails_data = thumbnails_data
+        self.timestamps = timestamps
+        self.duration = duration
+
+        if VideoEntryWidgetPyQt._pil_error_font is None:
+            try: VideoEntryWidgetPyQt._pil_error_font = PILImageFont.truetype("arial.ttf", 10)
+            except IOError: VideoEntryWidgetPyQt._pil_error_font = PILImageFont.load_default()
+
+        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
+        self.setLineWidth(1) # Ensure border is visible
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(5, 5, 5, 5)
+        self.main_layout.setSpacing(3)
+
+        top_part_layout = QHBoxLayout()
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(video_path in self.gui.selected_videos)
+        self.checkbox.stateChanged.connect(self.on_selection_changed)
+        top_part_layout.addWidget(self.checkbox)
+
+        duration_str = self.format_duration(duration)
+        video_label_text = f"{video_path.name} (Duration: {duration_str})"
+        if hasattr(gui, 'video_counter'): video_label_text = f"{gui.video_counter}. {video_label_text}"
+
+        self.video_label = QLabel(video_label_text)
+        self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.video_label.setWordWrap(True)
+        top_part_layout.addWidget(self.video_label)
+        self.main_layout.addLayout(top_part_layout)
+
+        self.thumbnails_widget = QWidget()
+        self.thumbnails_layout = QGridLayout(self.thumbnails_widget)
+        self.thumbnails_layout.setSpacing(2)
+        self.main_layout.addWidget(self.thumbnails_widget)
+
+        self.thumbnail_labels = []
+        self.load_thumbnails()
+        self.update_selection_appearance(self.checkbox.isChecked())
+
+    def mousePressEvent(self, event):
+        """Handle click on the frame to toggle selection."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.checkbox.setChecked(not self.checkbox.isChecked())
+        super().mousePressEvent(event)
+
+
+    def load_thumbnails(self):
+        if not all(hasattr(self.gui, attr) and getattr(self.gui, attr) is not None for attr in
+                   ['thumbs_per_column_var', 'width_var']):
+            logger.error(f"Cannot load thumbnails for {self.video_path}, GUI elements for dimensions not ready.")
+            return
+
+        thumbs_per_column = self.gui.thumbs_per_column_var.value()
+        if thumbs_per_column <= 0: thumbs_per_column = 1
+
+        original_image_width = self.gui.width_var.value()
+        if original_image_width <=0: original_image_width = 160
+        original_image_height = int(original_image_width * 9 / 16)
+
+        cache_base = self.video_path.parent / "cache" / self.video_path.name
+
+        for idx, thumb_filename in enumerate(self.thumbnails_data):
+            thumb_path = cache_base / thumb_filename
+            pil_image = None
+            if thumb_path.exists():
+                try: pil_image = Image.open(thumb_path)
+                except Exception as e: logger.error(f"Failed to open thumbnail {thumb_path}: {e}")
+
+            if pil_image is None:
+                pil_image = Image.new('RGB', (original_image_width, original_image_height), color='gray')
+                draw = ImageDraw.Draw(pil_image)
+                draw.text((5,5), "Error", fill="red", font=VideoEntryWidgetPyQt._pil_error_font)
+
+            timestamp_val = self.timestamps[idx] if idx < len(self.timestamps) else 0.0
+            timestamp_str = self.format_duration(timestamp_val)
+
+            try:
+                thumb_label = ThumbnailLabel(self.gui, self.video_path, pil_image, timestamp_str,
+                                             (original_image_width, original_image_height),
+                                             parent=self.thumbnails_widget)
+                thumb_label.rightClicked.connect(self.show_context_menu_from_child)
+
+                row = idx % thumbs_per_column
+                col = idx // thumbs_per_column
+                self.thumbnails_layout.addWidget(thumb_label, row, col)
+                self.thumbnail_labels.append(thumb_label)
+            except Exception as e:
+                logger.error(f"Error creating ThumbnailLabel for {self.video_path} idx {idx}: {e}", exc_info=True)
+        self.updateGeometry()
+
+    def format_duration(self, secs):
+        try: secs_float = float(secs)
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid duration value for formatting: {secs}, using 0.0")
+            secs_float = 0.0
+        hours = int(secs_float // 3600)
+        minutes = int((secs_float % 3600) // 60)
+        seconds = int(secs_float % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def on_selection_changed(self, state_value):
+        is_selected = (state_value == Qt.CheckState.Checked.value)
+        if is_selected: self.gui.selected_videos.add(self.video_path)
+        else: self.gui.selected_videos.discard(self.video_path)
+        self.update_selection_appearance(is_selected)
+        self.gui.update_selection_count()
+
+    def toggle_entry_selection_from_child(self):
+        self.checkbox.setChecked(not self.checkbox.isChecked())
+
+    def update_selection_appearance(self, is_selected):
+        if is_selected:
+            self.setStyleSheet("QFrame { background-color: lightblue; border: 1px solid black; }"
+                               "QLabel { background-color: lightblue; }"
+                               "QCheckBox { background-color: lightblue; }")
+        else:
+            self.setStyleSheet("QFrame { background-color: white; border: 1px solid black; }"
+                               "QLabel { background-color: white; }"
+                               "QCheckBox { background-color: white; }")
+        for thumb_label in self.thumbnail_labels:
+            thumb_label.setStyleSheet("QLabel { background-color: transparent; }") # Thumbnails should be transparent
+
+    def contextMenuEvent(self, event): self.show_context_menu(event.globalPos())
+    def show_context_menu_from_child(self, global_pos: QPoint): self.show_context_menu(global_pos)
+
+    def show_context_menu(self, global_pos: QPoint):
+        menu = QMenu(self)
+        play_action = menu.addAction("Play Video")
+        select_action = menu.addAction("Select/Deselect")
+        copy_name_action = menu.addAction("Copy Filename")
+        copy_path_action = menu.addAction("Copy Filepath")
+        open_explorer_action = menu.addAction("Open in Explorer")
+
+        action = menu.exec(global_pos)
+
+        if action == play_action: play_video_pyqt(self.gui, self.video_path)
+        elif action == select_action: self.checkbox.setChecked(not self.checkbox.isChecked())
+        elif action == copy_name_action: copy_filename_pyqt(self.gui, self.video_path)
+        elif action == copy_path_action: copy_filepath_pyqt(self.gui, self.video_path)
+        elif action == open_explorer_action: open_in_explorer_pyqt(self.video_path)
+
+def update_output_tab_pyqt(gui, video_path: Path, thumbnail_files: list, timestamps: list, duration: float):
+    logger.debug(f"Updating Output tab for {video_path} with {len(thumbnail_files)} thumbnails, duration: {duration}")
+
+    if not hasattr(gui, 'output_scrollable_layout') or gui.output_scrollable_layout is None:
+        logger.error("output_scrollable_layout not initialized in GUI. Cannot update output tab.")
+        return
+
+    gui.videos[video_path] = thumbnail_files
     gui.video_counter += 1
 
-    frame = None
-    for child in gui.output_scrollable_frame.winfo_children():
-        if hasattr(child, 'video_path') and child.video_path == video:
-            frame = child
-            break
-    if not frame:
-        bg_color = "lightblue" if video in gui.selected_videos else "white"
-        frame = tk.Frame(gui.output_scrollable_frame, highlightbackground="black", highlightthickness=1, bg=bg_color)
-        frame.pack(fill='x', padx=5, pady=5)
-        frame.video_path = video
+    existing_widget = None
+    for i in range(gui.output_scrollable_layout.count()):
+        item = gui.output_scrollable_layout.itemAt(i)
+        if item and item.widget():
+            widget = item.widget()
+            if isinstance(widget, VideoEntryWidgetPyQt) and widget.video_path == video_path:
+                existing_widget = widget
+                break
 
-        hours = int(duration // 3600)
-        minutes = int((duration % 3600) // 60)
-        seconds = int(duration % 60)
-        duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        video_label_text = f"{gui.video_counter}. {Path(video).name} (Duration: {duration_str})"
-        tk.Label(frame, text=video_label_text, anchor="nw", justify="left", bg=bg_color).pack(side="top", anchor="nw")
+    if existing_widget:
+        gui.output_scrollable_layout.removeWidget(existing_widget)
+        existing_widget.deleteLater()
+        logger.debug(f"Removed existing widget for {video_path} to update.")
 
-        thumbnail_frame = tk.Frame(frame, bg=bg_color)
-        thumbnail_frame.pack()
-        var = tk.BooleanVar(value=video in gui.selected_videos)
-        checkbutton = tk.Checkbutton(thumbnail_frame, variable=var, command=lambda v=video: toggle_selection(gui, v, var), bg=bg_color)
-        checkbutton.pack(side='left')
-        checkbutton.var = var
+    try:
+        video_entry = VideoEntryWidgetPyQt(gui, video_path, thumbnail_files, timestamps, duration)
+        gui.output_scrollable_layout.addWidget(video_entry)
+    except Exception as e:
+        logger.error(f"Error creating or adding VideoEntryWidgetPyQt for {video_path}: {e}", exc_info=True)
+        return
 
-        thumbs_per_column = gui.config.get('thumbnails_per_column')
-        num_thumbs = len(thumbnails)
-        cols = (num_thumbs + thumbs_per_column - 1) // thumbs_per_column
-        original_width = gui.processor.thumbnail_width
-        original_height = int(gui.processor.thumbnail_width * 9 / 16)
-        text_width_estimate = 50
-        canvas_width = (original_width + text_width_estimate) * cols
-        text_height_estimate = 20
-        canvas_height = (original_height + text_height_estimate) * min(thumbs_per_column, num_thumbs)
-        thumbnail_canvas = tk.Canvas(thumbnail_frame, height=canvas_height, width=canvas_width, bg=bg_color)
-        thumbnail_canvas.pack(side='left', fill='both', expand=True)
-
-        images, photo_images = [], []
-        cache_base = video.parent / "cache" / video.name
-        for idx, thumb in enumerate(thumbnails):
-            thumb_path = cache_base / thumb
-            if thumb_path.exists():
-                img = Image.open(thumb_path)
-                aspect_ratio = img.width / img.height
-                new_width = original_width
-                new_height = original_height
-                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-                timestamp = timestamps[idx]
-                hours = int(timestamp // 3600)
-                minutes = int((timestamp % 3600) // 60)
-                seconds = int(timestamp % 60)
-                timestamp_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-                draw = ImageDraw.Draw(img)
-                try:
-                    font = ImageFont.truetype("arial.ttf", 14)
-                except IOError:
-                    font = ImageFont.load_default()
-                text_bbox = draw.textbbox((0, 0), timestamp_str, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-                padding = 5
-                text_x = new_width - text_width - padding
-                text_y = new_height - text_height - padding
-                text_x = max(padding, text_x)
-                text_y = max(padding, text_y)
-                draw.rectangle(
-                    (text_x - padding, text_y - padding, text_x + text_width + padding, text_y + text_height + padding),
-                    fill=(0, 0, 0, 128)
-                )
-                draw.text((text_x, text_y), timestamp_str, fill="white", font=font)
-
-                images.append(img)
-                photo = ImageTk.PhotoImage(img)
-                photo_images.append(photo)
-                gui.photo_references.append(photo)
-
-        scroll_frame = tk.Frame(thumbnail_canvas, bg=bg_color)
-        thumbnail_canvas.create_window((0, 0), window=scroll_frame, anchor='nw')
-        thumbnail_canvas.configure(xscrollcommand=lambda *args: None)
-
-        for i, photo in enumerate(photo_images):
-            col = i // thumbs_per_column
-            row = i % thumbs_per_column
-            lbl = tk.Label(scroll_frame, image=photo, bd=0, bg=bg_color)
-            lbl.original_image = images[i]
-            lbl.current_scale = 1.0
-            lbl.is_zoomed = False
-            lbl.original_width = original_width + text_width_estimate
-            lbl.original_height = original_height + text_height_estimate
-            lbl.grid(row=row, column=col, padx=2, pady=2)
-            lbl.bind("<Enter>", lambda e, l=lbl: on_enter(gui, e, l, thumbnail_canvas))
-            lbl.bind("<Leave>", lambda e, l=lbl, c=thumbnail_canvas: on_leave(gui, e, l, c))
-            lbl.bind("<Button-1>", lambda e, v=video: select_video(gui, v, var))
-            lbl.bind("<Button-2>", lambda e, v=video: play_video(gui, v))
-            lbl.bind("<Double-1>", lambda e, v=video: play_video(gui, v))
-            lbl.bind("<Button-3>", lambda e, v=video: show_context_menu(gui, e, v))
-
-        frame.bind("<Button-3>", lambda e, v=video: show_context_menu(gui, e, v))
-        thumbnail_frame.bind("<Button-3>", lambda e, v=video: show_context_menu(gui, e, v))
-        thumbnail_canvas.bind("<Button-3>", lambda e, v=video: show_context_menu(gui, e, v))
-
-        logger.debug(f"Added frame for {video} to Output tab")
-        gui.output_scrollable_frame.update_idletasks()
-        gui.output_canvas.configure(scrollregion=gui.output_canvas.bbox("all"))
-        logger.debug(f"Updated scroll region for Output tab")
-        gui.update_selection_count()
-    else:
-        bg_color = "lightblue" if video in gui.selected_videos else "white"
-        frame.configure(bg=bg_color)
-        hours = int(duration // 3600)
-        minutes = int((duration % 3600) // 60)
-        seconds = int(duration % 60)
-        duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        video_label_text = f"{gui.video_counter}. {Path(video).name} (Duration: {duration_str})"
-        for child in frame.winfo_children():
-            if isinstance(child, tk.Label):
-                child.configure(text=video_label_text, bg=bg_color)
-            elif isinstance(child, tk.Frame):
-                child.configure(bg=bg_color)
-                for sub_child in child.winfo_children():
-                    if isinstance(sub_child, tk.Checkbutton):
-                        sub_child.configure(bg=bg_color)
-                        sub_child.var.set(video in gui.selected_videos)
-                    elif isinstance(sub_child, tk.Canvas):
-                        sub_child.configure(bg=bg_color)
-                        for item in sub_child.find_all():
-                            widget = sub_child.nametowidget(sub_child.itemcget(item, "window"))
-                            if isinstance(widget, tk.Frame):
-                                widget.configure(bg=bg_color)
-                                for sub_sub_child in widget.winfo_children():
-                                    sub_sub_child.configure(bg=bg_color)
-        gui.update_selection_count()
-
-def on_enter(gui, event, label, canvas):
-    """Zoom in on a thumbnail when hovering with Ctrl key."""
-    if event.state & 0x0004 and not label.is_zoomed:
-        zoom_factor = gui.config.get('zoom_factor')
-        img = label.original_image
-        new_width, new_height = int(label.original_width * zoom_factor), int((label.original_height - 20) * zoom_factor)
-        zoomed_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        photo = ImageTk.PhotoImage(zoomed_img)
-        label.configure(image=photo)
-        if hasattr(label, 'photo'):
-            gui.photo_references.remove(label.photo)
-        label.photo = photo
-        gui.photo_references.append(photo)
-        canvas.configure(height=new_height + 20)
-        label.is_zoomed = True
-
-def on_leave(gui, event, label, canvas):
-    """Revert to original thumbnail size when leaving with Ctrl key."""
-    if label.is_zoomed:
-        img = label.original_image
-        original_width, original_height = label.original_width, label.original_height
-        original_img = img.resize((original_width, original_height - 20), Image.Resampling.LANCZOS)
-        photo = ImageTk.PhotoImage(original_img)
-        label.configure(image=photo)
-        if hasattr(label, 'photo'):
-            gui.photo_references.remove(label.photo)
-        label.photo = photo
-        gui.photo_references.append(photo)
-        canvas.configure(height=original_height)
-        label.is_zoomed = False
+    if hasattr(gui, 'output_scrollable_widget') and gui.output_scrollable_widget:
+        gui.output_scrollable_widget.adjustSize()
+    gui.update_selection_count()
+    logger.debug(f"Added/Updated VideoEntryWidget for {video_path}")
