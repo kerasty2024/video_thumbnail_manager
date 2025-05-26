@@ -5,10 +5,9 @@ import json
 from pathlib import Path
 from src.distribution_enum import Distribution
 import time
-from src.gui.worker import VideoProcessingWorker # <--- 正しい場所からインポート
+from src.gui.worker import VideoProcessingWorker
 
 def setup_progress_controls_pyqt(gui, parent_layout):
-    # ... (この関数は変更なし) ...
     bottom_frame_widget = QWidget()
     bottom_layout = QVBoxLayout(bottom_frame_widget)
 
@@ -36,7 +35,8 @@ def setup_progress_controls_pyqt(gui, parent_layout):
 
 def start_processing_pyqt(gui):
     logger.info("start_processing_pyqt called.")
-    required_attrs = ['folder_var', 'thumbs_var', 'thumbs_per_column_var', 'width_var', 'quality_var',
+    required_attrs = ['folder_var', 'cache_folder_var', # Added cache_folder_var
+                      'thumbs_var', 'thumbs_per_column_var', 'width_var', 'quality_var',
                       'concurrent_var', 'zoom_var', 'min_size_var', 'min_size_unit_var',
                       'min_duration_var', 'min_duration_unit_var', 'use_peak_concentration_var',
                       'peak_pos_var', 'concentration_var', 'distribution_var', 'completion_label',
@@ -49,6 +49,7 @@ def start_processing_pyqt(gui):
             return
 
     folder = gui.folder_var.text()
+    cache_dir = gui.cache_folder_var.text() # Get cache_dir from GUI
     thumbs = gui.thumbs_var.value()
     thumbs_per_column = gui.thumbs_per_column_var.value()
     width = gui.width_var.value()
@@ -72,6 +73,7 @@ def start_processing_pyqt(gui):
     elif quality > 31: quality = 31
 
     gui.config.set('default_folder', folder)
+    gui.config.set('cache_dir', cache_dir) # Save cache_dir to config
     gui.config.set('thumbnails_per_video', thumbs)
     gui.config.set('thumbnails_per_column', thumbs_per_column)
     gui.config.set('thumbnail_width', width)
@@ -92,7 +94,7 @@ def start_processing_pyqt(gui):
             config_content = json.load(f)
         logger.info(f"Configuration saved to config.json: {json.dumps(config_content, indent=4)}")
 
-    gui.reinit_processor()
+    gui.reinit_processor() # This will now use the updated cache_dir from config
 
     if not gui.processor:
         logger.error("Cannot start processing: VideoProcessor failed to initialize.")
@@ -114,28 +116,18 @@ def start_processing_pyqt(gui):
 
     try:
         logger.info(f"Scanning videos in folder: {gui.folder_var.text()}")
-        # スキャン処理をワーカースレッドに移動する準備として、ここではファイルリストだけ作成
-        # gui.scanned_videos_for_worker = gui.processor.scan_videos(gui.folder_var.text())
-        # スキャンはワーカースレッドで行うため、ここでは行わない
-        # 대신, worker 가 스캔할 폴더를 알 수 있도록 설정
-        gui.folder_to_scan_for_worker = gui.folder_var.text() # workerが参照するフォルダ
+        gui.folder_to_scan_for_worker = gui.folder_var.text()
 
-        # total_videos と total_thumbnails はスキャン後にworkerが設定するか、
-        # またはスキャン自体をworkerで行い、その結果をGUIにシグナルで通知する。
-        # 今回は、スキャンもworkerで行うように変更した worker.py を前提とする。
-        # そのため、ここでの total_videos, total_thumbnails の設定は不要。
-        # GUIの表示は "Scanning..." のようにする。
-        gui.total_videos = 0 # スキャン前にリセット
-        gui.total_thumbnails = 0 # スキャン前にリセット
-        gui.completion_label.setText("Scanning videos...") # スキャン中であることを表示
+        gui.total_videos = 0
+        gui.total_thumbnails = 0
+        gui.completion_label.setText("Scanning videos...")
         logger.info("Video scan will be performed by the worker thread.")
 
-    except Exception as e: # ここでのエラーは主にフォルダパス取得など
+    except Exception as e:
         logger.error(f"Error preparing for video scanning: {e}", exc_info=True)
         gui.completion_label.setText(f"Error preparing scan: {e}")
         gui.setWindowTitle(gui.base_window_title)
-        output_tab_idx = gui.get_tab_index_by_text("Output (Processing...)")
-        if output_tab_idx == -1: output_tab_idx = gui.get_tab_index_by_text("Output")
+        output_tab_idx = gui.get_tab_index_by_text_prefix("Output") # Changed to prefix match
         if output_tab_idx != -1 and hasattr(gui.notebook, 'setTabText'):
             gui.notebook.setTabText(output_tab_idx, "Output")
         return
@@ -143,7 +135,6 @@ def start_processing_pyqt(gui):
     gui.processed_thumbnails_count = 0
     if gui.progress_bar: gui.progress_bar.setValue(0)
     if gui.eta_label: gui.eta_label.setText("ETA: --:--")
-    # gui.completion_label.setText("Processing starting...") # スキャン後に変更
     gui.start_time = time.time()
     gui.video_counter = 0
     gui.update_selection_count()
@@ -156,7 +147,6 @@ def start_processing_pyqt(gui):
         gui.connect_worker_signals(gui.processing_worker)
     else:
         logger.error("gui object does not have connect_worker_signals method!")
-        # フォールバックとして直接接続を試みる（ただし、これは理想的ではない）
         try:
             gui.processing_worker.signals.progress.connect(gui.update_progress_bar_slot)
             gui.processing_worker.signals.thumbnail_progress.connect(gui.update_process_tab_thumbnail_progress_slot)

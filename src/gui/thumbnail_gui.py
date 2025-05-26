@@ -59,7 +59,11 @@ class VideoThumbnailGUI(QMainWindow):
 
         if hasattr(self, 'use_peak_concentration_var') and self.use_peak_concentration_var:
             logger.debug("Setting initial state for use_peak_concentration checkbox and controls.")
+            # Set checkbox state from config BEFORE calling toggle_peak_concentration
+            # This ensures that toggle_peak_concentration uses the correct initial state
+            # to set the visibility and values of related controls.
             self.use_peak_concentration_var.setChecked(self.config.get('use_peak_concentration'))
+            self.toggle_peak_concentration() # Call to set initial state of related widgets
         else:
             logger.warning("use_peak_concentration_var not ready for initial toggle_peak_concentration call after setup.")
 
@@ -67,9 +71,9 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def setup_gui_elements(self):
-        # ... (変更なし) ...
         logger.debug("Initializing GUI element member variables to None.")
-        self.folder_var = None; self.thumbs_var = None; self.thumbs_per_column_var = None;
+        self.folder_var = None; self.cache_folder_var = None; # Added cache_folder_var
+        self.thumbs_var = None; self.thumbs_per_column_var = None;
         self.width_var = None; self.quality_var = None; self.concurrent_var = None;
         self.zoom_var = None; self.min_size_var = None; self.min_size_unit_var = None;
         self.min_duration_var = None; self.min_duration_unit_var = None;
@@ -84,7 +88,6 @@ class VideoThumbnailGUI(QMainWindow):
         self.process_text_edit = None; self.thumbnail_preview_label = None;
 
     def setup_gui_layout(self):
-        # ... (変更なし) ...
         logger.debug("Setting up GUI layout.")
         self.setWindowTitle(self.base_window_title)
         primary_screen = QApplication.primaryScreen()
@@ -107,9 +110,9 @@ class VideoThumbnailGUI(QMainWindow):
         self.input_frame = QVBoxLayout(self.input_tab)
         self.notebook.addTab(self.input_tab, "Input")
 
-        self.output_tab_widget_ref = QWidget() # output_tabそのものの参照を保持
+        self.output_tab_widget_ref = QWidget()
         self.output_frame_layout = QVBoxLayout(self.output_tab_widget_ref)
-        self.notebook.addTab(self.output_tab_widget_ref, "Output") # QWidget をタブとして追加
+        self.notebook.addTab(self.output_tab_widget_ref, "Output")
 
         self.process_tab = QWidget()
         self.process_frame_layout = QVBoxLayout(self.process_tab)
@@ -119,7 +122,7 @@ class VideoThumbnailGUI(QMainWindow):
 
         self.selection_count_label = QLabel("0 of 0 selected")
         self.output_frame_layout.addWidget(self.selection_count_label, alignment=Qt.AlignmentFlag.AlignTop)
-        setup_output_tab(self) # output_frame_layout を渡す
+        setup_output_tab(self)
 
         setup_process_tab(self)
 
@@ -128,7 +131,6 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def connect_worker_signals(self, worker_object_with_signals):
-        # ... (変更なし) ...
         if not worker_object_with_signals or not hasattr(worker_object_with_signals, 'signals'):
             logger.error("Cannot connect signals: worker_object_with_signals or its 'signals' attribute is None.")
             return
@@ -166,7 +168,6 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def reinit_processor(self):
-        # ... (変更なし) ...
         logger.debug("Reinitializing VideoProcessor...")
         try:
             thumbs_per_video_cfg = self.config.get('thumbnails_per_video')
@@ -174,8 +175,11 @@ class VideoThumbnailGUI(QMainWindow):
                 logger.warning(f"Invalid thumbnails_per_video from config: {thumbs_per_video_cfg}. Defaulting to 1.")
                 thumbs_per_video_cfg = 1
 
+            cache_dir_val = self.config.get('cache_dir')
+            logger.info(f"Reinitializing processor with cache_dir: '{cache_dir_val}'")
+
             self.processor = VideoProcessor(
-                self.config.get('cache_dir'),
+                cache_dir_val, # Use the value from config
                 thumbs_per_video_cfg,
                 self.config.get('thumbnail_width'),
                 self.config.get('thumbnail_quality'),
@@ -195,12 +199,10 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def schedule_processor_update(self, video_path, thumbnails, timestamps, duration):
-        # ... (変更なし) ...
         self._processor_update_signal.emit(Path(video_path), list(thumbnails), list(timestamps), float(duration))
 
 
     def browse_folder(self):
-        # ... (変更なし) ...
         current_folder = ""
         if hasattr(self, 'folder_var') and self.folder_var: current_folder = self.folder_var.text()
         if not current_folder: current_folder = self.config.get('default_folder')
@@ -210,8 +212,23 @@ class VideoThumbnailGUI(QMainWindow):
             self.folder_var.setText(folder)
             logger.debug(f"Selected folder: {folder}")
 
+    def browse_cache_folder(self):
+        """Opens a dialog to select the cache folder."""
+        current_cache_folder = ""
+        if hasattr(self, 'cache_folder_var') and self.cache_folder_var:
+            current_cache_folder = self.cache_folder_var.text()
+
+        if not current_cache_folder:
+            # Default to config value or current working directory
+            current_cache_folder = self.config.get('cache_dir') or str(Path.cwd())
+
+        folder = QFileDialog.getExistingDirectory(self, "Select Cache Folder", current_cache_folder)
+        if folder and hasattr(self, 'cache_folder_var') and self.cache_folder_var:
+            self.cache_folder_var.setText(folder)
+            logger.debug(f"Selected cache folder: {folder}")
+
+
     def report_error_slot_detailed(self, title_prefix, error_message):
-        # ... (変更なし) ...
         logger.error(f"Reported error: {title_prefix} - {error_message}")
         msg_box = QMessageBox(self)
         msg_box.setIcon(QMessageBox.Icon.Critical)
@@ -237,14 +254,12 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def update_selection_count(self):
-        # ... (変更なし) ...
         count = len(self.selected_videos)
         total = len(self.videos)
         if hasattr(self, 'selection_count_label') and self.selection_count_label:
             self.selection_count_label.setText(f"{count} of {total} selected")
 
     def update_output_tab_slot(self, video_path: Path, thumbnails: list, timestamps: list, duration: float):
-        # ... (変更なし) ...
         from src.gui.output_tab_modules.thumbnails import update_output_tab_pyqt
         logger.debug(f"GUI: Received _processor_update_signal for {video_path}")
 
@@ -267,7 +282,6 @@ class VideoThumbnailGUI(QMainWindow):
             self.update_eta_on_progress()
 
     def toggle_peak_concentration(self, *args):
-        # ... (変更なし) ...
         if hasattr(self, 'use_peak_concentration_var') and self.use_peak_concentration_var:
             toggle_peak_concentration_pyqt(self)
 
@@ -276,17 +290,14 @@ class VideoThumbnailGUI(QMainWindow):
     def clear_all_selection(self): clear_all_selection_pyqt(self)
 
     def update_distribution_graph(self, *args):
-        # ... (変更なし) ...
         if hasattr(self, 'distribution_canvas_widget') and self.distribution_canvas_widget:
             update_distribution_graph_pyqt(self)
 
     def update_progress_bar_slot(self, value):
-        # ... (変更なし) ...
         if hasattr(self, 'progress_bar') and self.progress_bar:
             self.progress_bar.setValue(value)
 
     def update_process_tab_thumbnail_progress_slot(self, progress_percentage, current_thumb_num, total_thumbs_for_video):
-        # ... (変更なし) ...
         if hasattr(self, 'process_text_edit') and self.process_text_edit:
             self.process_text_edit.append(
                 f"Thumbnail Progress: {progress_percentage:.2f}% "
@@ -295,7 +306,6 @@ class VideoThumbnailGUI(QMainWindow):
             self.process_text_edit.verticalScrollBar().setValue(self.process_text_edit.verticalScrollBar().maximum())
 
     def update_eta_on_progress(self):
-        # ... (変更なし) ...
         if self.start_time is None or self.processed_thumbnails_count == 0 or self.total_thumbnails == 0:
             self.update_eta_label_slot("ETA: --:--")
             return
@@ -314,19 +324,16 @@ class VideoThumbnailGUI(QMainWindow):
             self.update_eta_label_slot("ETA: --:-- (slow)")
 
     def update_eta_label_slot(self, text):
-        # ... (変更なし) ...
         if hasattr(self, 'eta_label') and self.eta_label:
             self.eta_label.setText(text)
 
     def update_completion_label_slot(self, text):
-        # ... (変更なし) ...
         if hasattr(self, 'completion_label') and self.completion_label:
             self.completion_label.setText(text)
             if text and text != "Processing Complete!":
                 QTimer.singleShot(5000, lambda: self.completion_label.setText("") if hasattr(self, 'completion_label') and self.completion_label and self.completion_label.text() == text else None)
 
     def update_command_slot(self, command, thumb_path_str, video_path_str):
-        # ... (変更なし) ...
         from src.gui.process_tab import update_process_text_pyqt, update_thumbnail_preview_pyqt
         if hasattr(self, 'process_text_edit') and self.process_text_edit:
             quoted_command = command.replace(str(video_path_str), f'"{video_path_str}"').replace(str(thumb_path_str), f'"{thumb_path_str}"')
@@ -343,16 +350,14 @@ class VideoThumbnailGUI(QMainWindow):
         if self.total_videos == 0:
             if hasattr(self, 'completion_label') and self.completion_label:
                 self.completion_label.setText("No videos found in the selected folder.")
-            self.setWindowTitle(self.base_window_title) # スキャンで見つからなければタイトルを元に戻す
-            output_tab_title = "Output" # 動画がなければ通常のタイトル
+            self.setWindowTitle(self.base_window_title)
+            output_tab_title = "Output"
         else:
             if hasattr(self, 'completion_label') and self.completion_label:
                 self.completion_label.setText(f"Scan complete. Processing {total_videos} videos...")
-            # ウィンドウタイトルは処理完了まで Processing... のままにするか、ここで更新するか
             self.setWindowTitle(f"{self.base_window_title} (Found {total_videos} videos)")
 
 
-        # Outputタブのタイトル更新
         output_tab_index = self.get_tab_index_by_text_prefix("Output")
         if output_tab_index != -1 and hasattr(self.notebook, 'setTabText'):
             self.notebook.setTabText(output_tab_index, output_tab_title)
@@ -366,7 +371,7 @@ class VideoThumbnailGUI(QMainWindow):
 
         output_tab_index = self.get_tab_index_by_text_prefix("Output")
         if output_tab_index != -1 and hasattr(self.notebook, 'setTabText'):
-            self.notebook.setTabText(output_tab_index, "Output") # 通常のタイトルに戻す
+            self.notebook.setTabText(output_tab_index, "Output")
 
         if hasattr(self, 'completion_label') and self.completion_label:
             self.completion_label.setText("Processing Complete!")
@@ -385,7 +390,6 @@ class VideoThumbnailGUI(QMainWindow):
         logger.info("GUI: Processing complete actions finished.")
 
     def _cleanup_worker_thread(self):
-        # ... (変更なし) ...
         logger.debug("_cleanup_worker_thread called.")
         worker = self.processing_worker
         thread = self.worker_thread
@@ -437,7 +441,6 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def get_min_duration_seconds(self):
-        # ... (変更なし) ...
         if not (hasattr(self, 'min_duration_var') and self.min_duration_var and
                 hasattr(self, 'min_duration_unit_var') and self.min_duration_unit_var): return 0.0
         min_duration = self.min_duration_var.value()
@@ -447,7 +450,6 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def get_min_size_mb(self):
-        # ... (変更なし) ...
         if not (hasattr(self, 'min_size_var') and self.min_size_var and
                 hasattr(self, 'min_size_unit_var') and self.min_size_unit_var): return 0.0
         min_size = self.min_size_var.value()
@@ -456,12 +458,10 @@ class VideoThumbnailGUI(QMainWindow):
         return min_size * conversion.get(unit, 1)
 
     def cleanup_on_quit(self):
-        # ... (変更なし) ...
         logger.info("Application is about to quit. Performing final cleanup.")
         self._cleanup_worker_thread()
 
     def closeEvent(self, event):
-        # ... (変更なし) ...
         logger.info("Close event received. Saving config...")
         self.config.save()
         logger.info("Configuration saved.")

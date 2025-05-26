@@ -14,7 +14,7 @@ class Config:
         """
         self.config_file = Path(config_file)
         self.defaults = {
-            'cache_dir': '',
+            'cache_dir': '',  # Default cache_dir, can be set by user in GUI
             'default_folder': '',
             'thumbnails_per_video': 18,
             'thumbnails_per_column': 3,
@@ -24,10 +24,10 @@ class Config:
             'zoom_factor': 2.0,
             'min_size_mb': 0.0,
             'min_duration_seconds': 0.0,
-            'use_peak_concentration': False,
-            'thumbnail_peak_pos': 0.5,
-            'thumbnail_concentration': 0.2,
-            'thumbnail_distribution': Distribution.NORMAL.value  # Store as string
+            'use_peak_concentration': True, # Changed default
+            'thumbnail_peak_pos': 0.6,      # Changed default
+            'thumbnail_concentration': 0.2, # Changed default
+            'thumbnail_distribution': Distribution.NORMAL.value  # Changed default (already Normal, but confirming)
         }
         self.config = self.load()
 
@@ -41,6 +41,7 @@ class Config:
             try:
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
+                # Ensure all default keys are present
                 for key, value in self.defaults.items():
                     if key not in config:
                         config[key] = value
@@ -71,7 +72,8 @@ class Config:
             try:
                 return Distribution(value)  # Return Enum instance
             except ValueError:
-                return Distribution.UNIFORM  # Default to UNIFORM if invalid
+                # Fallback to default from self.defaults if current value is invalid
+                return Distribution(self.defaults.get('thumbnail_distribution', Distribution.UNIFORM.value))
         return value
 
     def set(self, key, value):

@@ -19,6 +19,22 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     folder_layout.addWidget(browse_button)
     left_layout.addWidget(folder_group)
 
+    # Cache Folder (Left column)
+    cache_folder_group = QWidget()
+    cache_folder_layout = QHBoxLayout(cache_folder_group)
+    cache_folder_label = QLabel("Cache Folder:")
+    cache_folder_label.setToolTip("The directory to store cached thumbnails. Default is 'cache' in the current working directory if left empty.")
+    cache_folder_layout.addWidget(cache_folder_label)
+    gui.cache_folder_var = QLineEdit(gui.config.get('cache_dir'))
+    gui.cache_folder_var.setToolTip("Enter or browse to the cache folder. Leave empty for default.")
+    cache_folder_layout.addWidget(gui.cache_folder_var)
+    browse_cache_button = QPushButton("Browse")
+    browse_cache_button.setToolTip("Open a dialog to select the cache folder.")
+    browse_cache_button.clicked.connect(gui.browse_cache_folder) # New method to be added in thumbnail_gui.py
+    cache_folder_layout.addWidget(browse_cache_button)
+    left_layout.addWidget(cache_folder_group)
+
+
     # Thumbnails per Video (Left column)
     thumbs_group = QWidget()
     thumbs_layout = QHBoxLayout(thumbs_group)
