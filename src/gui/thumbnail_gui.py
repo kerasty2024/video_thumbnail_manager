@@ -18,7 +18,7 @@ from src.gui.input_tab_modules.distribution import toggle_peak_concentration_pyq
 from src.gui.output_tab_modules.selection import delete_selected_pyqt, delete_unselected_pyqt, clear_all_selection_pyqt
 from src.version import __version__
 from src.distribution_enum import Distribution
-from .worker import WorkerSignals, VideoProcessingWorker
+from .worker import WorkerSignals, VideoProcessingWorker # Corrected import
 
 class VideoThumbnailGUI(QMainWindow):
     _processor_update_signal = pyqtSignal(Path, list, list, float)
@@ -59,11 +59,8 @@ class VideoThumbnailGUI(QMainWindow):
 
         if hasattr(self, 'use_peak_concentration_var') and self.use_peak_concentration_var:
             logger.debug("Setting initial state for use_peak_concentration checkbox and controls.")
-            # Set checkbox state from config BEFORE calling toggle_peak_concentration
-            # This ensures that toggle_peak_concentration uses the correct initial state
-            # to set the visibility and values of related controls.
             self.use_peak_concentration_var.setChecked(self.config.get('use_peak_concentration'))
-            self.toggle_peak_concentration() # Call to set initial state of related widgets
+            self.toggle_peak_concentration()
         else:
             logger.warning("use_peak_concentration_var not ready for initial toggle_peak_concentration call after setup.")
 
@@ -72,7 +69,7 @@ class VideoThumbnailGUI(QMainWindow):
 
     def setup_gui_elements(self):
         logger.debug("Initializing GUI element member variables to None.")
-        self.folder_var = None; self.cache_folder_var = None; # Added cache_folder_var
+        self.folder_var = None; self.cache_folder_var = None;
         self.thumbs_var = None; self.thumbs_per_column_var = None;
         self.width_var = None; self.quality_var = None; self.concurrent_var = None;
         self.zoom_var = None; self.min_size_var = None; self.min_size_unit_var = None;
@@ -175,11 +172,11 @@ class VideoThumbnailGUI(QMainWindow):
                 logger.warning(f"Invalid thumbnails_per_video from config: {thumbs_per_video_cfg}. Defaulting to 1.")
                 thumbs_per_video_cfg = 1
 
-            cache_dir_val = self.config.get('cache_dir')
-            logger.info(f"Reinitializing processor with cache_dir: '{cache_dir_val}'")
+            cache_dir_val = self.config.get('cache_dir') # String value from config
+            logger.info(f"Reinitializing processor with cache_dir string from config: '{cache_dir_val}'")
 
             self.processor = VideoProcessor(
-                cache_dir_val, # Use the value from config
+                cache_dir_val,
                 thumbs_per_video_cfg,
                 self.config.get('thumbnail_width'),
                 self.config.get('thumbnail_quality'),
@@ -191,7 +188,7 @@ class VideoThumbnailGUI(QMainWindow):
                 concentration=self.config.get('thumbnail_concentration'),
                 distribution=self.config.get('thumbnail_distribution').value
             )
-            logger.debug(f"VideoProcessor reinitialized with thumbs_per_video: {self.processor.thumbnails_per_video if self.processor else 'N/A'}")
+            logger.debug(f"VideoProcessor reinitialized. Effective cache_dir: {self.processor.cache_dir if self.processor else 'N/A'}")
         except Exception as e:
             logger.error(f"Failed to reinitialize VideoProcessor: {e}", exc_info=True)
             self.processor = None
@@ -213,14 +210,14 @@ class VideoThumbnailGUI(QMainWindow):
             logger.debug(f"Selected folder: {folder}")
 
     def browse_cache_folder(self):
-        """Opens a dialog to select the cache folder."""
         current_cache_folder = ""
         if hasattr(self, 'cache_folder_var') and self.cache_folder_var:
             current_cache_folder = self.cache_folder_var.text()
 
         if not current_cache_folder:
-            # Default to config value or current working directory
-            current_cache_folder = self.config.get('cache_dir') or str(Path.cwd())
+            current_cache_folder = self.config.get('cache_dir') # Get from config
+            if not current_cache_folder: # If still empty, use a sensible default for the dialog
+                current_cache_folder = str(Path.cwd())
 
         folder = QFileDialog.getExistingDirectory(self, "Select Cache Folder", current_cache_folder)
         if folder and hasattr(self, 'cache_folder_var') and self.cache_folder_var:
@@ -270,7 +267,10 @@ class VideoThumbnailGUI(QMainWindow):
                 self.report_error_slot_detailed(f"Processor Error for {video_path.name}", "Video processor is not initialized. Cannot update output.")
                 return
 
-        update_output_tab_pyqt(self, video_path, thumbnails, timestamps, duration)
+        # Determine the specific cache directory for this video to pass to the UI
+        video_specific_cache_dir = self.processor.cache_dir / video_path.name
+        update_output_tab_pyqt(self, video_path, thumbnails, timestamps, duration, video_specific_cache_dir)
+
 
         actual_thumbs_per_video = self.processor.thumbnails_per_video if self.processor else self.config.get('thumbnails_per_video')
         if actual_thumbs_per_video <=0: actual_thumbs_per_video = 1
@@ -330,8 +330,9 @@ class VideoThumbnailGUI(QMainWindow):
     def update_completion_label_slot(self, text):
         if hasattr(self, 'completion_label') and self.completion_label:
             self.completion_label.setText(text)
-            if text and text != "Processing Complete!":
+            if text and text != "Processing Complete!": # Avoid clearing "Processing Complete!"
                 QTimer.singleShot(5000, lambda: self.completion_label.setText("") if hasattr(self, 'completion_label') and self.completion_label and self.completion_label.text() == text else None)
+
 
     def update_command_slot(self, command, thumb_path_str, video_path_str):
         from src.gui.process_tab import update_process_text_pyqt, update_thumbnail_preview_pyqt
@@ -402,10 +403,10 @@ class VideoThumbnailGUI(QMainWindow):
                 logger.debug("Requesting worker thread to quit...")
                 if worker and hasattr(worker, 'stop'): worker.stop()
                 thread.quit()
-                if not thread.wait(7000):
+                if not thread.wait(7000): # Increased timeout
                     logger.warning("Worker thread did not finish in time. Terminating.")
                     thread.terminate()
-                    if not thread.wait(2000):
+                    if not thread.wait(3000): # Increased timeout
                         logger.error("Worker thread failed to terminate even after forced termination.")
                 logger.debug("Worker thread finished or was terminated.")
             else: logger.debug("Worker thread was not running or already finished.")
@@ -432,7 +433,6 @@ class VideoThumbnailGUI(QMainWindow):
 
 
     def get_tab_index_by_text_prefix(self, text_prefix_to_find):
-        """Finds a tab by its text prefix (e.g., "Output" matches "Output (Scanning...)")."""
         if hasattr(self, 'notebook') and self.notebook:
             for i in range(self.notebook.count()):
                 if self.notebook.tabText(i).startswith(text_prefix_to_find):
