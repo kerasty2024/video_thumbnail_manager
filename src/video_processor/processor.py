@@ -4,28 +4,28 @@ from threading import Lock
 
 from loguru import logger
 
-from .cache import get_cache_path, is_cache_valid, clear_cache # Correct relative imports
-from .scanner import scan_videos
+from .cache import get_cache_path, is_cache_valid, clear_cache
+from .scanner import scan_videos # scan_videos now takes exclusion parameters
 from .thumbnail import generate_thumbnails
 from src.distribution_enum import Distribution
 
 class VideoProcessor:
-    def __init__(self, cache_dir_str, thumbnails_per_video, thumbnail_width, thumbnail_quality, concurrent_videos, min_size_mb, min_duration_seconds, update_callback=None, peak_pos=0.5, concentration=0.2, distribution='normal'):
+    def __init__(self, cache_dir_str, thumbnails_per_video, thumbnail_width, thumbnail_quality,
+                 concurrent_videos, min_size_mb, min_duration_seconds, update_callback=None,
+                 peak_pos=0.5, concentration=0.2, distribution='normal',
+                 excluded_words_str="", excluded_words_regex=False, excluded_words_match_full_path=False): # New args
+
         if cache_dir_str and cache_dir_str.strip():
-            self.cache_dir = Path(cache_dir_str).resolve() # Resolve to absolute path
+            self.cache_dir = Path(cache_dir_str).resolve()
             logger.info(f"VideoProcessor using specified cache directory: {self.cache_dir}")
         else:
-            # Default to a 'cache' subdirectory in the current working directory
-            self.cache_dir = Path.cwd() / "vtm_cache_default" # Or any other default name
+            self.cache_dir = Path.cwd() / "vtm_cache_default"
             logger.info(f"VideoProcessor using default cache directory: {self.cache_dir}")
 
-        # Ensure the base cache directory exists
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             logger.error(f"Failed to create or access cache directory {self.cache_dir}: {e}. Caching might fail.")
-            # Potentially fall back to a temporary directory or disable caching if critical
-            # For now, we'll proceed and let operations fail if the dir is truly inaccessible.
 
         self.thumbnails_per_video = thumbnails_per_video
         self.thumbnail_width = thumbnail_width
@@ -42,6 +42,13 @@ class VideoProcessor:
             logger.warning(f"Invalid distribution '{distribution}', defaulting to 'normal'")
             self.distribution = Distribution.NORMAL
 
+        self.excluded_words_str = excluded_words_str
+        self.excluded_words_regex = excluded_words_regex
+        self.excluded_words_match_full_path = excluded_words_match_full_path
+        logger.debug(f"Processor initialized with excluded words: '{self.excluded_words_str}', "
+                     f"regex: {self.excluded_words_regex}, "
+                     f"match_full_path: {self.excluded_words_match_full_path}")
+
         self._stop_requested = False
 
     def request_stop(self):
@@ -49,7 +56,12 @@ class VideoProcessor:
         self._stop_requested = True
 
     def scan_videos(self, folder):
-        return scan_videos(folder, self.min_size_mb, self.min_duration_seconds)
+        """Scan videos applying exclusion rules."""
+        logger.debug(f"Processor.scan_videos called with folder: {folder}, "
+                     f"exclusions: '{self.excluded_words_str}', regex: {self.excluded_words_regex}, "
+                     f"match_full: {self.excluded_words_match_full_path}")
+        return scan_videos(folder, self.min_size_mb, self.min_duration_seconds,
+                           self.excluded_words_str, self.excluded_words_regex, self.excluded_words_match_full_path)
 
     def process_videos(self, videos, progress_callback=None, error_callback=None, command_callback=None, completion_callback=None, stop_flag_check=None):
         logger.info(f"VideoProcessor: Starting processing for {len(videos)} videos. Cache root: {self.cache_dir}")
@@ -62,7 +74,7 @@ class VideoProcessor:
             futures = {
                 executor.submit(
                     generate_thumbnails,
-                    self, # Pass the processor instance (self)
+                    self,
                     video,
                     progress_callback,
                     command_callback,
@@ -90,8 +102,6 @@ class VideoProcessor:
                             error_callback(video, str(e))
                 finally:
                     processed_count +=1
-                    # logger.debug(f"Video {processed_count}/{total_videos} future completed or cancelled.")
-
 
         logger.info(f"VideoProcessor: Finished processing batch. Processed {processed_count} futures.")
         if completion_callback:

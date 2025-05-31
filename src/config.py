@@ -27,7 +27,10 @@ class Config:
             'use_peak_concentration': True, # Changed default
             'thumbnail_peak_pos': 0.6,      # Changed default
             'thumbnail_concentration': 0.2, # Changed default
-            'thumbnail_distribution': Distribution.NORMAL.value  # Changed default (already Normal, but confirming)
+            'thumbnail_distribution': Distribution.NORMAL.value,  # Changed default (already Normal, but confirming)
+            'excluded_words': '',  # Comma-separated string of excluded words/patterns
+            'excluded_words_regex': False,  # Whether to treat excluded_words as regex
+            'excluded_words_match_full_path': False  # Whether to match against full path or just filename/dirname
         }
         self.config = self.load()
 

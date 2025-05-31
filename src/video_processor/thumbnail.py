@@ -11,7 +11,8 @@ from src.distribution_enum import Distribution
 from .cache import get_cache_path, is_cache_valid, clear_cache
 
 def generate_placeholder_thumbnail(processor):
-    return Image.new('RGB', (processor.thumbnail_width, int(processor.thumbnail_width * 9 / 16)), color='gray')
+    height = int(processor.thumbnail_width * 9 / 16)
+    return Image.new('RGB', (processor.thumbnail_width, height), color='gray')
 
 def get_video_duration(video_path):
     cmd = ['ffmpeg', '-i', str(video_path), '-hide_banner']
@@ -25,6 +26,8 @@ def get_video_duration(video_path):
                 h, m, s = map(float, time_str.split(':'))
                 duration = h * 3600 + m * 60 + s
                 break
+        if duration == 0:
+            logger.warning(f"Could not parse duration for {video_path} from FFmpeg output. Output: {output[:500]}")
         return duration
     except subprocess.TimeoutExpired:
         logger.warning(f"ffmpeg timeout while getting duration for {video_path}")
@@ -53,34 +56,71 @@ def generate_distributed_timestamps(processor, duration):
             else: normalized_timestamps = np.linspace(0, 1, num_thumbnails + 2)[1:-1]
         case Distribution.TRIANGULAR:
             if num_thumbnails == 0: return []
-            mode = np.clip(processor.peak_pos, 0.01, 0.99)
-            left_bound = max(0, mode - processor.concentration)
-            right_bound = min(1, mode + processor.concentration)
-            if left_bound >= mode: left_bound = max(0, mode - 0.01)
-            if right_bound <= mode: right_bound = min(1, mode + 0.01)
-            if left_bound >= right_bound:
-                normalized_timestamps = np.full(num_thumbnails, mode)
+            peak_pos_f = float(processor.peak_pos)
+            concentration_f = float(processor.concentration)
+
+            left_bound = max(0, peak_pos_f - concentration_f)
+            right_bound = min(1, peak_pos_f + concentration_f)
+            mode = np.clip(peak_pos_f, left_bound, right_bound)
+
+            if abs(right_bound - left_bound) < 1e-6 or concentration_f < 1e-3:
+                spread_epsilon = 0.05
+                left_fallback = max(0, peak_pos_f - spread_epsilon)
+                right_fallback = min(1, peak_pos_f + spread_epsilon)
+                if left_fallback >= right_fallback:
+                    normalized_timestamps = np.full(num_thumbnails, peak_pos_f)
+                else:
+                    normalized_timestamps = np.random.triangular(left_fallback, peak_pos_f, right_fallback, num_thumbnails)
+
             else:
                 normalized_timestamps = np.random.triangular(left_bound, mode, right_bound, num_thumbnails)
+
         case Distribution.NORMAL:
             if num_thumbnails == 0: return []
-            sigma = max(processor.concentration, 1e-6)
-            samples = np.random.normal(processor.peak_pos, sigma, num_thumbnails * 5)
+            sigma = max(float(processor.concentration), 1e-6)
+
+            initial_sample_size = num_thumbnails * 10 if num_thumbnails > 1 else 20
+            samples = np.random.normal(float(processor.peak_pos), sigma, initial_sample_size)
             samples_clipped = np.clip(samples, 0, 1)
-            if len(samples_clipped) < num_thumbnails :
-                normalized_timestamps = np.linspace(0.1, 0.9, num_thumbnails)
+
+            if num_thumbnails == 1:
+                normalized_timestamps = np.array([np.median(samples_clipped)])
             else:
-                percentiles = np.linspace(0, 100, num_thumbnails)
-                normalized_timestamps = np.percentile(samples_clipped, percentiles)
+                percentiles_to_sample = np.linspace(0, 100, num_thumbnails)
+                normalized_timestamps = np.percentile(samples_clipped, percentiles_to_sample)
         case _:
             logger.error(f"Unknown distribution: {current_distribution}. Defaulting to UNIFORM.")
             if num_thumbnails == 0: return []
             if num_thumbnails == 1: normalized_timestamps = np.array([0.5])
             else: normalized_timestamps = np.linspace(0, 1, num_thumbnails + 2)[1:-1]
 
-    normalized_timestamps = np.clip(np.sort(normalized_timestamps), 0.01, 0.99)
-    timestamps = [timestamp * duration for timestamp in normalized_timestamps]
-    return sorted(list(set(timestamps)))
+    normalized_timestamps = np.unique(np.clip(normalized_timestamps, 0.01, 0.99))
+
+    if len(normalized_timestamps) < num_thumbnails and num_thumbnails > 0:
+        logger.trace(f"Distribution generated {len(normalized_timestamps)} unique timestamps, need {num_thumbnails}. Augmenting.")
+        if len(normalized_timestamps) > 0 :
+            uniform_fill = np.linspace(0.01, 0.99, num_thumbnails)
+            combined = np.concatenate((normalized_timestamps, uniform_fill))
+            normalized_timestamps = np.unique(combined)
+            if len(normalized_timestamps) > num_thumbnails:
+                indices = np.round(np.linspace(0, len(normalized_timestamps) - 1, num_thumbnails)).astype(int)
+                normalized_timestamps = normalized_timestamps[indices]
+        else:
+            normalized_timestamps = np.linspace(0.01, 0.99, num_thumbnails)
+
+
+    timestamps_in_seconds = [ts * duration for ts in normalized_timestamps]
+
+    if len(timestamps_in_seconds) > num_thumbnails:
+        indices = np.round(np.linspace(0, len(timestamps_in_seconds) - 1, num_thumbnails)).astype(int)
+        timestamps_in_seconds = [timestamps_in_seconds[i] for i in indices]
+    elif len(timestamps_in_seconds) < num_thumbnails and num_thumbnails > 0:
+        if timestamps_in_seconds:
+            timestamps_in_seconds.extend([timestamps_in_seconds[-1]] * (num_thumbnails - len(timestamps_in_seconds)))
+        else:
+            timestamps_in_seconds = [(duration * 0.5)] * num_thumbnails
+
+    return sorted(list(set(timestamps_in_seconds)))
 
 
 def generate_thumbnails(processor, video_path: Path, progress_callback=None, command_callback=None, stop_flag_check=None):
@@ -89,16 +129,15 @@ def generate_thumbnails(processor, video_path: Path, progress_callback=None, com
         logger.info(f"Thumbnail generation for {video_path} cancelled before start.")
         return [], [], 0
 
-    cache_json_file_path = get_cache_path(processor, video_path) # Uses processor.cache_dir
-    # Base directory for this video's thumbnails within the global cache_dir
+    cache_json_file_path = get_cache_path(processor, video_path)
     video_specific_cache_dir = processor.cache_dir / video_path.name
-    video_specific_cache_dir.mkdir(parents=True, exist_ok=True) # Ensure it exists
+    video_specific_cache_dir.mkdir(parents=True, exist_ok=True)
 
     if not cache_json_file_path.exists():
         logger.debug(f"No cache JSON found at {cache_json_file_path} for {video_path}. Generating new thumbnails.")
     elif not is_cache_valid(processor, video_path):
         logger.debug(f"Cache invalid for {video_path} at {cache_json_file_path}. Clearing cache.")
-        clear_cache(processor, video_path) # This will clear video_specific_cache_dir
+        clear_cache(processor, video_path)
     else:
         try:
             with open(cache_json_file_path, 'r') as f:
@@ -127,8 +166,16 @@ def generate_thumbnails(processor, video_path: Path, progress_callback=None, com
         if video_duration <= 0:
             logger.warning(f"Could not determine valid duration for {video_path} ({video_duration}s). Skipping.")
             if processor.update_callback:
-                placeholder_thumbs = [f"placeholder_{i}.jpg" for i in range(processor.thumbnails_per_video)]
-                processor.update_callback(video_path, placeholder_thumbs, [0]*processor.thumbnails_per_video, 0)
+                placeholder_filenames = []
+                for i in range(processor.thumbnails_per_video):
+                    ph_name = f"placeholder_error_{i}.jpg"
+                    ph_path = video_specific_cache_dir / ph_name
+                    try:
+                        generate_placeholder_thumbnail(processor).save(ph_path)
+                        placeholder_filenames.append(ph_name)
+                    except Exception as e_ph:
+                        logger.error(f"Failed to save placeholder {ph_path}: {e_ph}")
+                processor.update_callback(video_path, placeholder_filenames, [0.0]*len(placeholder_filenames), 0.0)
             return [], [], 0
 
         target_timestamps = generate_distributed_timestamps(processor, video_duration)
@@ -138,61 +185,169 @@ def generate_thumbnails(processor, video_path: Path, progress_callback=None, com
                 processor.update_callback(video_path, [], [], video_duration)
             return [], [], video_duration
 
-        for i, timestamp in enumerate(target_timestamps):
+        actual_num_thumbnails = min(len(target_timestamps), processor.thumbnails_per_video)
+
+        for i, timestamp in enumerate(target_timestamps[:actual_num_thumbnails]):
             if stop_flag_check and stop_flag_check():
                 logger.info(f"Thumbnail generation for {video_path} cancelled during loop at timestamp {timestamp}.")
                 break
 
             thumb_filename = f"thumb_{i:03d}.jpg"
-            # Thumbnails are stored inside video_specific_cache_dir
             thumb_path = video_specific_cache_dir / thumb_filename
 
             ffmpeg_cmd_successful = False
-            cmd_list = [
-                ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-hwaccel', 'cuda', '-ss', str(timestamp), '-i', str(video_path),
-                 '-vf', f'format=yuv420p,scale={processor.thumbnail_width}:-1', '-vframes', '1', '-qscale:v', str(processor.thumbnail_quality),
+
+            # Base scale filter: preserve aspect ratio by specifying width and -1 for height.
+            scale_vf = f'scale={processor.thumbnail_width}:-1'
+            # Common output format for good compatibility.
+            format_vf = 'format=yuv420p'
+            # Combine scale and format, can be extended with other filters.
+            vf_complex = f'{scale_vf},{format_vf}'
+
+
+            cmd_attempts = [
+                # Attempt 1: Standard HW accel (if available), precise seek before -i.
+                ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-hwaccel', 'cuda',
+                 '-ss', str(timestamp), '-i', str(video_path),
+                 '-vf', vf_complex,
+                 '-vframes', '1', '-qscale:v', str(processor.thumbnail_quality),
                  '-c:v', 'mjpeg', '-y', str(thumb_path)],
-                ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-ss', str(timestamp), '-i', str(video_path),
-                 '-vf', f'scale={processor.thumbnail_width}:-1,format=yuv420p',
-                 '-vframes', '1', '-c:v', 'mjpeg', '-q:v', str(processor.thumbnail_quality), '-y', str(thumb_path)]
+
+                # Attempt 2: Standard SW decoding, precise seek before -i.
+                ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                 '-ss', str(timestamp), '-i', str(video_path),
+                 '-vf', vf_complex,
+                 '-vframes', '1', '-qscale:v', str(processor.thumbnail_quality),
+                 '-c:v', 'mjpeg', '-y', str(thumb_path)],
+
+                # Attempt 3: SW decoding, seek after -i (slower, but can be more robust for some files).
+                ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                 '-i', str(video_path), '-ss', str(timestamp),
+                 '-vf', vf_complex,
+                 '-vframes', '1', '-qscale:v', str(processor.thumbnail_quality),
+                 '-c:v', 'mjpeg', '-y', str(thumb_path)],
+
+                # Attempt 4: SW, copyts for timestamp accuracy, output as image2.
+                # `-an` (no audio), `-f image2` (force image output).
+                ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                 '-copyts', '-ss', str(timestamp), '-i', str(video_path),
+                 '-vf', vf_complex,
+                 '-vframes', '1', '-an', '-f', 'image2', '-qscale:v', str(processor.thumbnail_quality),
+                 '-y', str(thumb_path)],
+
+                # Attempt 5: SW, precise seek, but try seeking to a slightly earlier keyframe using -seek_timestamp
+                # This requires ffprobe or similar to find the nearest keyframe, which is complex here.
+                # A simpler approximation: seek slightly *before* the target timestamp.
+                # The -skip_frame option with -copyinkf might be better but also complex.
+                # Let's try a small negative offset with -ss.
+                ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                 '-ss', str(max(0, timestamp - 0.5)), '-i', str(video_path), # Seek 0.5s earlier
+                 '-ss', '0.5', # Then seek forward 0.5s from that point (relative seek if -ss is after -i)
+                 # This effectively means -i ... -ss timestamp
+                 '-vf', vf_complex,
+                 '-vframes', '1', '-qscale:v', str(processor.thumbnail_quality),
+                 '-c:v', 'mjpeg', '-y', str(thumb_path)],
+
+                # Attempt 6: Force keyframe seeking only using -skip_frame nokey.
+                # This is typically for -ss before -i. If a keyframe is not at `timestamp`, it will take the one *before* it.
+                # Then we need to seek *within* that segment. This is getting too complex without ffprobe.
+                # Simpler: Use `-ss` before `-i` and hope it lands on a keyframe near `timestamp`.
+                # If it's not accurate, the previous attempts might handle it better.
+                # Add a variation with `-force_key_frames` for output (though less relevant for single image).
+                # What might be more useful is to explicitly ask for a keyframe *near* the timestamp.
+                # One way is to use a select filter: vf select='eq(pict_type\,I)'
+                # This selects only I-frames. Combine with -ss for a window.
+
+                # Attempt 6: -ss before -i, specify output pix_fmt explicitly for mjpeg
+                ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                 '-ss', str(timestamp), '-i', str(video_path),
+                 '-vf', vf_complex, '-pix_fmt', 'yuvj420p', # Common for JPEG
+                 '-vframes', '1', '-qscale:v', str(processor.thumbnail_quality),
+                 '-c:v', 'mjpeg', '-y', str(thumb_path)],
+
+                # Attempt 7: No HW accel, seek after -i, use a slightly different timestamp again
+                ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                 '-i', str(video_path), '-ss', str(timestamp + 0.05), # Tiny positive offset
+                 '-vf', vf_complex,
+                 '-vframes', '1', '-qscale:v', str(processor.thumbnail_quality),
+                 '-c:v', 'mjpeg', '-y', str(thumb_path)],
+
+                # Attempt 8: Similar to 7, but try to output a PNG instead of MJPEG, sometimes helps with decoders/encoders.
+                # PNG is lossless but larger; for a single frame, it's an alternative.
+                # We'd need to change thumb_filename extension or convert later if sticking to JPG.
+                # For now, let's stick to JPG output for consistency in cache.
+                # This attempt will be a repeat of a previous one with a slight variation if needed.
+                # Let's try a very basic command as a last resort.
+                ['ffmpeg', '-hide_banner', '-loglevel', 'warning', # More verbose log for this one
+                 '-i', str(video_path), '-ss', str(timestamp),
+                 '-vframes', '1', '-s', f'{processor.thumbnail_width}x-1', # Simpler scale
+                 '-f', 'image2', '-q:v', str(processor.thumbnail_quality), # alias for qscale:v
+                 '-y', str(thumb_path)],
             ]
 
-            for cmd_idx, cmd in enumerate(cmd_list):
+
+            for cmd_idx, cmd in enumerate(cmd_attempts):
+                if stop_flag_check and stop_flag_check(): break
+
+                logger.trace(f"Attempt {cmd_idx+1} for {video_path.name} @{timestamp:.2f}s: {' '.join(cmd)}")
                 if command_callback:
                     command_callback(' '.join(cmd), str(thumb_path), str(video_path))
+
                 try:
-                    result = subprocess.run(cmd, capture_output=True, text=False, timeout=30)
-                    if result.returncode == 0 and thumb_path.exists() and thumb_path.stat().st_size > 0:
-                        thumbnails.append(thumb_filename) # Store only filename, relative to video_specific_cache_dir
-                        generated_timestamps.append(timestamp)
-                        ffmpeg_cmd_successful = True
-                        logger.debug(f"Generated thumbnail {thumb_path} at {timestamp}s (Attempt {cmd_idx+1})")
-                        break
+                    result = subprocess.run(cmd, capture_output=True, text=False, timeout=45)
+                    if result.returncode == 0 and thumb_path.exists() and thumb_path.stat().st_size > 100:
+                        try:
+                            img = Image.open(thumb_path)
+                            img.verify()
+                            img.close()
+
+                            thumbnails.append(thumb_filename)
+                            generated_timestamps.append(timestamp)
+                            ffmpeg_cmd_successful = True
+                            logger.debug(f"Successfully generated thumbnail {thumb_path.name} (Attempt {cmd_idx+1})")
+                            break
+                        except Exception as e_pil:
+                            logger.warning(f"Pillow verification failed for {thumb_path.name} (Attempt {cmd_idx+1}): {e_pil}. Retrying FFmpeg.")
+                            if thumb_path.exists(): thumb_path.unlink(missing_ok=True)
                     else:
-                        error_output = result.stderr.decode('utf-8', errors='ignore')
-                        logger.warning(f"FFmpeg attempt {cmd_idx+1} failed for {video_path} at {timestamp}s. Code: {result.returncode}. Error: {error_output[:200]}")
+                        error_output = result.stderr.decode('utf-8', errors='ignore') if result.stderr else "No stderr"
+                        logger.warning(f"FFmpeg attempt {cmd_idx+1} failed for {video_path.name} at {timestamp:.2f}s. Code: {result.returncode}. Error: {error_output[:300]}")
+                        if thumb_path.exists() and thumb_path.stat().st_size <= 100 :
+                            thumb_path.unlink(missing_ok=True)
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"FFmpeg attempt {cmd_idx+1} timed out for {video_path} at {timestamp}s.")
+                    logger.warning(f"FFmpeg attempt {cmd_idx+1} timed out for {video_path.name} at {timestamp:.2f}s.")
                 except Exception as e_ffmpeg:
-                    logger.error(f"Exception during FFmpeg attempt {cmd_idx+1} for {video_path} at {timestamp}s: {e_ffmpeg}", exc_info=True)
+                    logger.error(f"Exception during FFmpeg attempt {cmd_idx+1} for {video_path.name} at {timestamp:.2f}s: {e_ffmpeg}", exc_info=False) # exc_info=False for less noise
 
             if not ffmpeg_cmd_successful:
-                logger.warning(f"All FFmpeg attempts failed for {video_path} at {timestamp}s. Generating placeholder.")
+                logger.warning(f"All FFmpeg attempts failed for {video_path.name} at {timestamp:.2f}s. Generating placeholder.")
                 placeholder_img = generate_placeholder_thumbnail(processor)
                 try:
                     placeholder_img.save(thumb_path)
                     thumbnails.append(thumb_filename)
                     generated_timestamps.append(timestamp)
                 except Exception as e_placeholder:
-                    logger.error(f"Failed to save placeholder thumbnail for {video_path} at {timestamp}s: {e_placeholder}")
+                    logger.error(f"Failed to save placeholder thumbnail for {video_path.name} at {timestamp:.2f}s: {e_placeholder}")
 
             if progress_callback:
-                progress_val = ((i + 1) / len(target_timestamps)) * 100
+                progress_val = ((i + 1) / actual_num_thumbnails) * 100
                 progress_callback(progress_val)
+
+        if stop_flag_check and stop_flag_check():
+            logger.info(f"Thumbnail generation for {video_path.name} was stopped. Processed {len(thumbnails)} thumbnails.")
+
+        if len(generated_timestamps) < len(thumbnails):
+            if generated_timestamps:
+                last_ts = generated_timestamps[-1]
+            else:
+                last_ts = 0.0 if not target_timestamps else target_timestamps[len(generated_timestamps)]
+
+            generated_timestamps.extend([last_ts] * (len(thumbnails) - len(generated_timestamps)))
+
 
         if thumbnails:
             cache_data = {
-                'thumbnails': thumbnails, # List of filenames (e.g., "thumb_000.jpg")
+                'thumbnails': thumbnails,
                 'timestamps': generated_timestamps,
                 'duration': video_duration,
                 'thumbnails_per_video': processor.thumbnails_per_video,
@@ -203,25 +358,31 @@ def generate_thumbnails(processor, video_path: Path, progress_callback=None, com
                 'distribution': processor.distribution.value if isinstance(processor.distribution, Distribution) else str(processor.distribution)
             }
             try:
-                with open(cache_json_file_path, 'w') as f: # Save to the JSON file
+                with open(cache_json_file_path, 'w') as f:
                     json.dump(cache_data, f, indent=4)
-                logger.debug(f"Saved cache JSON to {cache_json_file_path} for {video_path}")
+                logger.debug(f"Saved cache JSON to {cache_json_file_path} for {video_path.name}")
             except Exception as e:
-                logger.error(f"Failed to write cache JSON to {cache_json_file_path} for {video_path}: {e}")
+                logger.error(f"Failed to write cache JSON to {cache_json_file_path} for {video_path.name}: {e}")
 
         if processor.update_callback:
-            # The update_callback needs to know how to reconstruct the full path to thumbnails.
-            # It will receive `thumbnails` (list of filenames) and can combine them with `video_specific_cache_dir`.
-            # Or, the VideoEntryWidget itself can be made aware of the `video_specific_cache_dir`.
-            # For now, let's assume the UI part (VideoEntryWidget) will reconstruct paths.
             processor.update_callback(video_path, thumbnails, generated_timestamps, video_duration)
 
         return thumbnails, generated_timestamps, video_duration
 
     except Exception as e:
-        logger.error(f"General error processing thumbnails for {video_path}: {e}", exc_info=True)
+        logger.error(f"General error processing thumbnails for {video_path.name}: {e}", exc_info=True)
         if processor.update_callback:
             num_thumbs_fallback = processor.thumbnails_per_video if hasattr(processor, 'thumbnails_per_video') and processor.thumbnails_per_video > 0 else 1
-            placeholder_thumbs = [f"error_placeholder_{i}.jpg" for i in range(num_thumbs_fallback)]
-            processor.update_callback(video_path, placeholder_thumbs, [0.0]*num_thumbs_fallback, 0.0)
+
+            placeholder_filenames = []
+            for i_ph in range(num_thumbs_fallback):
+                ph_name_err = f"error_placeholder_{i_ph}.jpg"
+                ph_path_err = video_specific_cache_dir / ph_name_err
+                try:
+                    generate_placeholder_thumbnail(processor).save(ph_path_err)
+                    placeholder_filenames.append(ph_name_err)
+                except Exception as e_ph_save:
+                    logger.error(f"Failed to save error placeholder {ph_path_err}: {e_ph_save}")
+
+            processor.update_callback(video_path, placeholder_filenames, [0.0]*len(placeholder_filenames), 0.0)
         return [], [], 0

@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QHBoxLayout, QWidget
+from PyQt6.QtWidgets import QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QHBoxLayout, QWidget, QCheckBox, QVBoxLayout, QFrame
 from PyQt6.QtGui import QIntValidator, QDoubleValidator
 
 def setup_input_controls_pyqt(gui, left_layout, right_layout):
@@ -23,17 +23,16 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     cache_folder_group = QWidget()
     cache_folder_layout = QHBoxLayout(cache_folder_group)
     cache_folder_label = QLabel("Cache Folder:")
-    cache_folder_label.setToolTip("The directory to store cached thumbnails. Default is 'cache' in the current working directory if left empty.")
+    cache_folder_label.setToolTip("The directory to store cached thumbnails. Default is 'vtm_cache_default' in the current working directory if left empty.")
     cache_folder_layout.addWidget(cache_folder_label)
     gui.cache_folder_var = QLineEdit(gui.config.get('cache_dir'))
     gui.cache_folder_var.setToolTip("Enter or browse to the cache folder. Leave empty for default.")
     cache_folder_layout.addWidget(gui.cache_folder_var)
     browse_cache_button = QPushButton("Browse")
     browse_cache_button.setToolTip("Open a dialog to select the cache folder.")
-    browse_cache_button.clicked.connect(gui.browse_cache_folder) # New method to be added in thumbnail_gui.py
+    browse_cache_button.clicked.connect(gui.browse_cache_folder)
     cache_folder_layout.addWidget(browse_cache_button)
     left_layout.addWidget(cache_folder_group)
-
 
     # Thumbnails per Video (Left column)
     thumbs_group = QWidget()
@@ -42,13 +41,12 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     thumbs_label.setToolTip("Number of thumbnails to generate per video (default: 18).")
     thumbs_layout.addWidget(thumbs_label)
     gui.thumbs_var = QSpinBox()
-    gui.thumbs_var.setRange(1, 100) # Example range
+    gui.thumbs_var.setRange(1, 100)
     gui.thumbs_var.setValue(gui.config.get('thumbnails_per_video'))
     gui.thumbs_var.setToolTip("Set the number of thumbnails to extract from each video.")
     thumbs_layout.addWidget(gui.thumbs_var)
     thumbs_layout.addStretch(1)
     left_layout.addWidget(thumbs_group)
-
 
     # Thumbnails per Column (Left column)
     thumbs_per_col_group = QWidget()
@@ -57,7 +55,7 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     thumbs_per_column_label.setToolTip("Number of thumbnails displayed per column in the output (default: 3).")
     thumbs_per_col_layout.addWidget(thumbs_per_column_label)
     gui.thumbs_per_column_var = QSpinBox()
-    gui.thumbs_per_column_var.setRange(1, 20) # Example range
+    gui.thumbs_per_column_var.setRange(1, 20)
     gui.thumbs_per_column_var.setValue(gui.config.get('thumbnails_per_column'))
     gui.thumbs_per_column_var.setToolTip("Set the number of thumbnails per column in the output layout.")
     thumbs_per_col_layout.addWidget(gui.thumbs_per_column_var)
@@ -71,7 +69,7 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     width_label.setToolTip("Width of each thumbnail in pixels (default: 320).")
     width_layout.addWidget(width_label)
     gui.width_var = QSpinBox()
-    gui.width_var.setRange(50, 1920) # Example range
+    gui.width_var.setRange(50, 1920)
     gui.width_var.setValue(gui.config.get('thumbnail_width'))
     gui.width_var.setToolTip("Set the width of the generated thumbnails.")
     width_layout.addWidget(gui.width_var)
@@ -99,18 +97,15 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     min_duration_label.setToolTip("Minimum video duration to process (default: 0.0 seconds).")
     min_duration_layout.addWidget(min_duration_label)
     gui.min_duration_var = QDoubleSpinBox()
-    gui.min_duration_var.setRange(0.0, 10000.0) # Example range
-    gui.min_duration_var.setValue(gui.config.get('min_duration_seconds')) # Default to seconds from config
+    gui.min_duration_var.setRange(0.0, 10000.0)
+    gui.min_duration_var.setValue(gui.config.get('min_duration_seconds'))
     gui.min_duration_var.setToolTip("Set the minimum video duration to include.")
     min_duration_layout.addWidget(gui.min_duration_var)
     gui.min_duration_unit_var = QComboBox()
     gui.min_duration_unit_var.addItems(['seconds', 'minutes', 'hours'])
-    # Find and set current unit based on config (if it was stored as seconds)
-    # For simplicity, assume 'seconds' is the base unit. Let user choose if they want to input in min/hr
     gui.min_duration_unit_var.setToolTip("Select the unit for the minimum video duration.")
     min_duration_layout.addWidget(gui.min_duration_unit_var)
     left_layout.addWidget(min_duration_group)
-
 
     # Min Video Size (Left column)
     min_size_group = QWidget()
@@ -119,14 +114,13 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     min_size_label.setToolTip("Minimum video file size to process (default: 0.0 MB).")
     min_size_layout.addWidget(min_size_label)
     gui.min_size_var = QDoubleSpinBox()
-    gui.min_size_var.setRange(0.0, 100000.0) # Example range
-    gui.min_size_var.setValue(gui.config.get('min_size_mb')) # Default to MB from config
+    gui.min_size_var.setRange(0.0, 100000.0)
+    gui.min_size_var.setValue(gui.config.get('min_size_mb'))
     gui.min_size_var.setToolTip("Set the minimum video size to include (in MB).")
     min_size_layout.addWidget(gui.min_size_var)
     gui.min_size_unit_var = QComboBox()
     gui.min_size_unit_var.addItems(['MB', 'KB', 'GB', 'TB'])
-    # Find and set current unit
-    gui.min_size_unit_var.setCurrentText('MB') # Default display unit
+    gui.min_size_unit_var.setCurrentText('MB')
     gui.min_size_unit_var.setToolTip("Select the unit for the minimum video size.")
     min_size_layout.addWidget(gui.min_size_unit_var)
     left_layout.addWidget(min_size_group)
@@ -138,7 +132,7 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     concurrent_label.setToolTip("Number of videos to process simultaneously (default: 4).")
     concurrent_layout.addWidget(concurrent_label)
     gui.concurrent_var = QSpinBox()
-    gui.concurrent_var.setRange(1, 16) # Example range
+    gui.concurrent_var.setRange(1, 16)
     gui.concurrent_var.setValue(gui.config.get('concurrent_videos'))
     gui.concurrent_var.setToolTip("Set the number of videos processed concurrently.")
     concurrent_layout.addWidget(gui.concurrent_var)
@@ -152,7 +146,7 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     zoom_label.setToolTip("Zoom level when hovering over thumbnails with Ctrl (default: 2.0).")
     zoom_layout.addWidget(zoom_label)
     gui.zoom_var = QDoubleSpinBox()
-    gui.zoom_var.setRange(1.0, 10.0) # Example range
+    gui.zoom_var.setRange(1.0, 10.0)
     gui.zoom_var.setSingleStep(0.1)
     gui.zoom_var.setValue(gui.config.get('zoom_factor'))
     gui.zoom_var.setToolTip("Set the zoom factor for thumbnail hover previews.")
@@ -160,6 +154,37 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     zoom_layout.addStretch(1)
     left_layout.addWidget(zoom_group)
 
-    left_layout.addStretch(1) # Pushes all controls to the top of left_layout
+    # Excluded Words (Left column, below zoom factor)
+    excluded_words_frame = QFrame()
+    excluded_words_frame_layout = QVBoxLayout(excluded_words_frame)
+    excluded_words_frame.setFrameShape(QFrame.Shape.StyledPanel)
 
-    # Right layout will be populated by distribution controls
+    excluded_words_label_group = QWidget()
+    excluded_words_label_layout = QHBoxLayout(excluded_words_label_group)
+    excluded_words_label = QLabel("Excluded Words/Patterns:")
+    excluded_words_label.setToolTip("Comma-separated list of words or regular expressions. Files or folders matching these will be excluded from scanning.")
+    excluded_words_label_layout.addWidget(excluded_words_label)
+    excluded_words_label_layout.addStretch(1)
+    excluded_words_frame_layout.addWidget(excluded_words_label_group)
+
+    gui.excluded_words_var = QLineEdit(gui.config.get('excluded_words'))
+    gui.excluded_words_var.setToolTip("Enter comma-separated words or patterns. Files/folders matching these will be excluded.")
+    excluded_words_frame_layout.addWidget(gui.excluded_words_var)
+
+    excluded_options_group = QWidget()
+    excluded_options_layout = QHBoxLayout(excluded_options_group)
+    gui.excluded_words_regex_var = QCheckBox("Use Regex")
+    gui.excluded_words_regex_var.setChecked(gui.config.get('excluded_words_regex'))
+    gui.excluded_words_regex_var.setToolTip("Treat excluded words as regular expressions.")
+    excluded_options_layout.addWidget(gui.excluded_words_regex_var)
+
+    gui.excluded_words_match_full_path_var = QCheckBox("Match Full Path")
+    gui.excluded_words_match_full_path_var.setChecked(gui.config.get('excluded_words_match_full_path'))
+    gui.excluded_words_match_full_path_var.setToolTip("Match excluded words against the full path (otherwise, only filename/directory name).")
+    excluded_options_layout.addWidget(gui.excluded_words_match_full_path_var)
+    excluded_options_layout.addStretch(1)
+    excluded_words_frame_layout.addWidget(excluded_options_group)
+
+    left_layout.addWidget(excluded_words_frame)
+
+    left_layout.addStretch(1) # Pushes all controls to the top of left_layout
