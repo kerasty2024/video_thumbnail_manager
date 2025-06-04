@@ -8,6 +8,7 @@ scripts/
 *.log
 *.cmd
 project_analysis_report.txt
+logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

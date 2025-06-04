@@ -1,5 +1,32 @@
-from PyQt6.QtWidgets import QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QHBoxLayout, QWidget, QCheckBox, QVBoxLayout, QFrame
+from PyQt6.QtWidgets import (QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox,
+                             QComboBox, QHBoxLayout, QWidget, QCheckBox, QVBoxLayout,
+                             QFrame, QSizePolicy)
 from PyQt6.QtGui import QIntValidator, QDoubleValidator
+from PyQt6.QtCore import Qt, QTimer
+
+class ClickableComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._popup_pending = False
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if self.isEditable() and self.lineEdit() and \
+           self.lineEdit().geometry().contains(event.position().toPoint()):
+            if not self.view().isVisible() and not self._popup_pending:
+                self._popup_pending = True
+                QTimer.singleShot(0, self._try_show_popup)
+
+    def _try_show_popup(self):
+        if self.lineEdit() and (self.lineEdit().hasFocus() or self.hasFocus()):
+             if not self.view().isVisible():
+                self.showPopup()
+        self._popup_pending = False
+
+    def hidePopup(self):
+        super().hidePopup()
+        self._popup_pending = False
+
 
 def setup_input_controls_pyqt(gui, left_layout, right_layout):
     """Setup input controls for the Input tab using PyQt6."""
@@ -10,9 +37,19 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     folder_label = QLabel("Folder:")
     folder_label.setToolTip("The directory containing the video files to process.")
     folder_layout.addWidget(folder_label)
-    gui.folder_var = QLineEdit(gui.config.get('default_folder'))
-    gui.folder_var.setToolTip("Enter or browse to the folder with video files.")
-    folder_layout.addWidget(gui.folder_var)
+
+    gui.folder_combo_var = ClickableComboBox()
+    gui.folder_combo_var.setEditable(True)
+    if gui.folder_combo_var.lineEdit():
+        gui.folder_combo_var.lineEdit().setText(gui.config.get('default_folder'))
+        gui.folder_combo_var.lineEdit().setPlaceholderText("Enter or select folder path")
+    gui.folder_combo_var.setToolTip("Enter folder path or select from history. Click to see history if available.")
+    gui.folder_combo_var.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    gui.folder_combo_var.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+    gui.folder_combo_var.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+
+    folder_layout.addWidget(gui.folder_combo_var, 1)
+
     browse_button = QPushButton("Browse")
     browse_button.setToolTip("Open a dialog to select the video folder.")
     browse_button.clicked.connect(gui.browse_folder)
@@ -186,5 +223,20 @@ def setup_input_controls_pyqt(gui, left_layout, right_layout):
     excluded_words_frame_layout.addWidget(excluded_options_group)
 
     left_layout.addWidget(excluded_words_frame)
+    left_layout.addStretch(1)
 
-    left_layout.addStretch(1) # Pushes all controls to the top of left_layout
+    # Log Output Checkbox (Right column)
+    log_output_group = QWidget()
+    log_output_layout = QHBoxLayout(log_output_group)
+    log_output_layout.setContentsMargins(0, 0, 0, 0)
+
+    gui.log_output_checkbox = QCheckBox("Enable Process Logging")
+    gui.log_output_checkbox.setChecked(True)
+    gui.log_output_checkbox.setToolTip(
+        "If checked, saves current settings to 'logs/YYYYMMDD_HHMMSS.json' "
+        "when processing starts."
+    )
+    log_output_layout.addWidget(gui.log_output_checkbox)
+    log_output_layout.addStretch(1)
+
+    right_layout.addWidget(log_output_group)
